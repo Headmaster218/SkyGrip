@@ -2,11 +2,15 @@ from simulation_and_control.sim.pybullet_robot_interface import SimInterface
 from mppi_real_driver import RealRobotController
 from simulation_and_control.controllers.servo_motor import MotorCommands
 import numpy as np
+import time
 
 class UnifiedRobotController:
     def __init__(self, config_path, use_sim=True, use_real=True):
         self.use_sim = use_sim
         self.use_real = use_real
+        self.last_real_send_time = 0.0  # 上次发送给实物的时间
+        self.prev_angles = [0.0, 0.0]  # 上次发送的角度
+        self.real_ctrl_dt = 0.033  # 实物控制周期
 
         if self.use_sim:
             self.sim = SimInterface(config_path)
@@ -35,9 +39,13 @@ class UnifiedRobotController:
         if self.sim is not None:
             self.sim.Step(cmd)
 
-        # 给实物舵机传入角度，注意单位转换为度
-        if self.real is not None:
-            deg_q_des = np.degrees(q_des) + real_offset
-            self.real.send_joint_positions(deg_q_des.tolist())
+        now = time.time()
+        if now - self.last_real_send_time >= self.real_ctrl_dt:
+            if self.real is not None:
+                deg_q_des = np.degrees(q_des) + real_offset
+                self.real.send_joint_positions(deg_q_des.tolist())
+                self.last_real_send_time = now
+
+
 
 
