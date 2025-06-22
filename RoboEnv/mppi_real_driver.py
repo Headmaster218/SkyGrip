@@ -1,4 +1,5 @@
 from dynamixel_sdk import *  # Dynamixel SDK
+import numpy as np
 class RealRobotController:
     def __init__(self, device_name="/dev/ttyUSB0", baudrate=57600, dxl_ids=[0, 1]):
         self.DEVICENAME = device_name
@@ -9,6 +10,7 @@ class RealRobotController:
         self.ADDR_TORQUE_ENABLE = 64
         self.ADDR_GOAL_POSITION = 116  # 4 bytes
         self.LEN_GOAL_POSITION = 4
+        self.ADDR_PRESENT_POSITION = 132  # 4 bytes
         self.TORQUE_ENABLE = 1
 
         # 初始化串口和协议处理器
@@ -36,6 +38,30 @@ class RealRobotController:
         self.groupSyncWrite = GroupSyncWrite(
             self.portHandler, self.packetHandler, self.ADDR_GOAL_POSITION, self.LEN_GOAL_POSITION
         )
+
+
+    def get_joint_positions(self):
+        """
+        返回当前舵机位置（单位：弧度），长度与 self.DXL_IDS 一致
+        """
+        current_positions = []
+        for dxl_id in self.DXL_IDS:
+            pos_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
+                self.portHandler, dxl_id, self.ADDR_PRESENT_POSITION)
+            if dxl_comm_result != COMM_SUCCESS:
+                print(f"[ID {dxl_id}] 读取失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
+                continue
+            elif dxl_error != 0:
+                print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
+                continue
+
+            # Dynamixel 位置值是 0~4095，映射到 0~360°
+            degree = (pos_result / 4095.0) * 360.0
+            rad = np.radians(degree)  # 转换为弧度
+            current_positions.append(rad)
+
+        return current_positions
+
 
     def degree_to_position(self, degree):
         degree = degree % 360

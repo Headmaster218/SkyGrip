@@ -5,11 +5,6 @@ import pybullet as p
 
 controller = UnifiedRobotController("mppi.json", use_sim=True, use_real=True)
 
-angle_slider1 = p.addUserDebugParameter("Angle1", -1.6, 1.6, 0)
-angle_slider2 = p.addUserDebugParameter("Angle2", -1.6, 1.6, 0)
-
-dt = 0.001  # 控制周期
-
 class SmoothPositionController:
     def __init__(self, n_joints, max_vel=10.0, accel=4.0, dt=0.001):
         self.n = n_joints
@@ -52,11 +47,26 @@ class SmoothPositionController:
         return self.pos.tolist()
 
 
+
+dt = 0.001  # 控制周期
+
 smooth_controller = SmoothPositionController(n_joints=2, max_vel=1.0, accel=2.0, dt=0.002)
 
-# 初始化目标
-prev_target = [0.0, 0.0]
-smooth_controller.set_target(prev_target)
+if controller.use_real:
+    startpos =  controller.get_joint_positions()
+else:
+    startpos = [0.0, 0.0]
+
+angle_slider1 = p.addUserDebugParameter("Angle1", -1.6, 1.6, startpos[0])
+angle_slider2 = p.addUserDebugParameter("Angle2", -1.6, 1.6, startpos[1])
+
+# 设置为当前位置，不做启动冲击
+smooth_controller.pos = np.array(startpos)
+smooth_controller.set_target(startpos)
+prev_target = startpos.copy()  # ✅ 确保不触发误更新
+
+# prev_target = [0,0]
+# smooth_controller.set_target(prev_target)
 
 while True:
     # 读取目标角度

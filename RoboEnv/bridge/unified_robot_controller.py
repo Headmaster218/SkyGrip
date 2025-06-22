@@ -22,6 +22,14 @@ class UnifiedRobotController:
         else:
             self.real = None
 
+    def get_joint_positions(self):
+        """
+        返回当前舵机位置（单位：弧度），长度与 self.DXL_IDS 一致
+        """
+        real_offset = np.radians(np.array([115.0, 135.0]) )       # 实物环境的偏移（deg）
+        raw_pos =  self.real.get_joint_positions()
+        return raw_pos - real_offset
+
     def send_joint_targets(self, q_des):
         from simulation_and_control.controllers.servo_motor import MotorCommands
         import numpy as np
