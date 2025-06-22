@@ -1,0 +1,59 @@
+{
+  "sim": {
+    "time_step": 0.001,
+    "experiment_duration": 10,
+    "FL": [[]],
+    "FR": [[]],
+    "RL": [[]],
+    "RR": [[]],
+    "feet_contact_names": [[]]
+  },
+
+  "env_pybullet": {
+    "env_script_name": null,
+    "use_gui": true,
+    "camera_distance": 1.2,
+    "camera_yaw": 45,
+    "camera_pitch": -30,
+    "camera_target_position": [0.0, 0.0, 0.5]
+  },
+
+"robot_pybullet": {
+  "urdf_path": ["mppi/mppi.urdf"],
+  "base_type": ["fixed"],
+  "init_link_base_position": [[0.0, 0.0, 0.01]],
+  "init_link_base_orientation": [[-0.707, 0.0, 0.0, 0.707]],
+  "init_link_base_vel": [[0.0, 0.0, 0.0]],
+  "init_link_base_ang_vel": [[0.0, 0.0, 0.0]],
+  "floating_base_name": ["base_link"],
+  "controlled_joints": ["Joint_1", "Joint_2"],  
+  "init_motor_angles": [[0.0, 0.0]],
+  "init_motor_vel": [[0.0, 0.0]],
+  "motor_offset": [[0.0, 0.0]],
+  "motor_direction": [[1.0, 1.0]],
+  "servo_pos_gains": [[1000,0]],
+  "servo_vel_gains": [[0.4,0]],
+  "motor_damping": [0.0],
+  "motor_damping_coeff": [0.0],
+  "motor_elastic_torque": [0.0],
+  "motor_elastic_coeff": [0.0],
+  "motor_inertia": [0.0],
+  "motor_inertia_coeff": [0.0],
+  "robot_description_model": [""],     
+  "collision_enable": [false],
+  "foot_friction": [0.9],
+  "foot_restitution": [0.0],
+  "noise_flag": [false],
+  "noise_covariance": [{}],
+  "robot_noise": [{}],
+  "delay_measure_flag": [false],
+  "delay_measure_steps": [0],
+  "enable_feet_joint_force_sensors": [[]]
+},
+
+  "robot_pin": {
+    "urdf_path": [""],
+    "base_type": ["fixed"],
+    "joint_state_conversion_active": [1]
+  }
+}

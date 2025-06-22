@@ -1,0 +1,439 @@
+# Class Documentation for SimInterface
+
+## Part 1: Class Initialization and Environment Setup
+
+### Class: `SimInterface`
+This class provides an interface to the PyBullet simulator, managing the setup, simulation, and interaction with robotic agents.
+
+#### Constructor: `SimInterface(conf_file_name: str)`
+- **Parameters**:
+  - `conf_file_name`: Filename of the configuration JSON file, assumed to be located in a 'configs' folder relative to the class file.
+- **Description**: Constructs the robot and environment in PyBullet based on the provided configuration.
+
+#### Method: `LoadEnv(env_script_name: str)`
+- **Parameters**:
+  - `env_script_name`: Path to the Python script that sets up additional environment components.
+- **Description**: Executes a Python script to configure additional aspects of the simulation environment.
+
+## Part 2: Simulation Controls and Updates
+
+#### Method: `ReceiveObservation()`
+- **Description**: Updates and retrieves the latest sensor data from the simulation. This method is crucial for synchronizing the internal state with the simulation at each timestep.
+
+#### Method: `Step(action, control_mode)`
+- **Parameters**:
+  - `action`: The control actions to be applied to the robot.
+  - `control_mode`: Specifies the mode of control for the actions, such as torque or velocity.
+- **Description**: Advances the simulation by applying the specified actions using the given control mode.
+
+#### Method: `ApplyAction(cmd, motor_control_mode)`
+- **Parameters**:
+  - `cmd`: Commands to be applied to the robot's motors.
+  - `motor_control_mode`: The mode of control for the motors (e.g., torque control).
+- **Description**: Directly interfaces with PyBullet to apply the specified motor commands using the defined control mode.
+
+## Part 3: Environment Interaction and State Management
+
+#### Method: `GetFootContacts()`
+- **Returns**: A list of booleans indicating whether each foot of the robot is in contact with the environment.
+- **Description**: Checks and reports the contact state of each foot, which is essential for dynamics and control strategies that rely on contact feedback.
+
+#### Method: `ComputeMassMatrix(previous_state=False)`
+- **Parameters**:
+  - `previous_state`: If true, uses the robot's previous state to compute the mass matrix.
+- **Returns**: The mass matrix of the robot, which is essential for many dynamics calculations.
+- **Description**: Computes the mass matrix of the robot using its current or previous state. This is often used in control algorithms that require dynamic modeling.
+
+## Part 4: Transformation and Dynamics
+
+#### Method: `TransformWorld2Body(world_value)`
+- **Parameters**:
+  - `world_value`: A vector or point in the world coordinate frame.
+- **Returns**: The corresponding vector or point in the body coordinate frame of the robot.
+- **Description**: Converts a vector from the world coordinate frame to the body coordinate frame, which is useful for calculations involving forces and movements relative to the robot.
+
+#### Method: `SetFootFriction(foot_friction)`
+- **Parameters**:
+  - `foot_friction`: The desired friction coefficient for the robot's feet.
+- **Description**: Sets the friction coefficient for the feet, affecting how the robot interacts with the ground, particularly in terms of slipping and sliding.
+
+## Part 5: Utility Functions
+
+#### Method: `ComputeGravity(base_velocity_in_base_frame=False, previous_state=False)`
+- **Parameters**:
+  - `base_velocity_in_base_frame`: If true, computes the gravity vector in the base frame of the robot.
+  - `previous_state`: If true, uses the previous state for calculations.
+- **Returns**: The gravity vector affecting the robot.
+- **Description**: Computes the gravity vector, which is crucial for dynamic simulations and ensuring realistic interactions with the simulated environment.
+
+#### Method: `ComputeCoriolis(previous_state=False)`
+- **Parameters**:
+  - `previous_state`: If true, uses the previous state to compute the Coriolis forces.
+- **Returns**: The Coriolis force vector for the robot.
+- **Description**: Calculates the Coriolis forces based on the robot's state, which are essential for accurate dynamic simulations and control strategies.
+## Part 6: Advanced Dynamics
+
+#### Method: `DirectDynamicsActuatedNoContact(tau, previous_state=False)`
+- **Parameters**:
+  - `tau`: The torque input for the robot.
+  - `previous_state`: If true, uses the previous state for dynamics calculations.
+- **Returns**: The resulting acceleration from the applied torque, excluding contact forces.
+- **Description**: Calculates the direct dynamics of the actuated robot, assuming no contact with the environment, which is useful for simulations focusing on airborne or swimming robots.
+
+## Part 7: Position and Orientation
+
+#### Method: `GetBasePosition(index=0)`
+- **Parameters**:
+  - `index`: Index of the robot in case of multiple robots.
+- **Returns**: The position of the robot's base in the world frame.
+- **Description**: Retrieves the current position of the robot's base, essential for tracking and control purposes.
+
+#### Method: `GetBaseOrientation(index=0)`
+- **Parameters**:
+  - `index`: Index of the robot in case of multiple robots.
+- **Returns**: The orientation of the robot's base in quaternion format.
+- **Description**: Fetches the current orientation of the robot's base, which is critical for tasks that require precise orientation control, such as balancing and manipulation.
+
+## Part 8: Joint Information
+
+#### Method: `GetJointInfo(body_id, joint_id)`
+- **Parameters**:
+  - `body_id`: The ID of the robot body.
+  - `joint_id`: The specific joint ID for which information is requested.
+- **Returns**: A tuple containing detailed information about the specified joint.
+- **Description**: Provides comprehensive information about a specific joint, including its name, type, limits, and dynamics properties, which is crucial for detailed analysis and control of individual joints.
+
+#### Method: `GetBotJointsInfo(index=0)`
+- **Parameters**:
+  - `index`: Index of the robot in case of multiple robots.
+- **Description**: Prints detailed information about all joints of the specified robot, aiding in debugging and system analysis.
+
+## Part 9: Simulation Control
+
+#### Method: `SetTimeSteps(simulation_step)`
+- **Parameters**:
+  - `simulation_step`: The time step for the simulation.
+- **Description**: Sets the time step for the simulation, allowing for control over the simulation's resolution and speed.
+
+#### Method: `ResetPose()`
+- **Description**: Resets the robot to its initial pose, typically used at the start of a simulation or after a significant disturbance to reestablish a known state.
+
+## Part 10: Dynamics and State Information
+
+#### Method: `GetSystemState(fixed_base=False, base_vel_base_frame=False, index=0)`
+- **Parameters**:
+  - `fixed_base` (bool): If true, assumes the robot has a fixed base.
+  - `base_vel_base_frame` (bool): If true, returns the base velocity in the body frame.
+  - `index` (int): Index of the robot, if handling multiple robots.
+- **Returns**: The full state of the system, including positions, orientations, and velocities.
+- **Description**: Retrieves the full state of the system, which is crucial for control and monitoring purposes, providing a comprehensive snapshot of the current dynamics.
+
+#### Method: `GetSystemPreviousState(fixed_base=False, base_vel_base_frame=False, index=0)`
+- **Parameters**:
+  - `fixed_base` (bool): If true, uses a fixed-base model for calculations.
+  - `base_vel_base_frame` (bool): If true, returns the base velocities in the body frame.
+  - `index` (int): Index of the robot, useful in multi-robot scenarios.
+- **Returns**: The system's state from the previous simulation step.
+- **Description**: Provides the state of the system from the previous timestep, useful for dynamics calculations and historical data analysis.
+
+## Part 11: Kinematics and Motion
+
+#### Method: `SetjointPosition(position, index=0)`
+- **Parameters**:
+  - `position`: Desired joint positions.
+  - `index` (int): Index of the robot.
+- **Description**: Directly sets the joint positions without physics, useful for kinematic simulations or initial setup.
+
+#### Method: `SetfloatingBasePositionAndOrientation(position, orientation, index=0)`
+- **Parameters**:
+  - `position`: Desired position for the robot’s base.
+  - `orientation`: Desired orientation for the robot’s base.
+  - `index` (int): Index of the robot.
+- **Description**: Sets the position and orientation of the robot's floating base, typically used for resetting or repositioning the robot in the simulation.
+
+## Part 12: Visualization and Debugging
+
+#### Method: `KinematicVisualizer(q_res, dyn_model, visual_delays=0)`
+- **Parameters**:
+  - `q_res`: Joint configurations over time.
+  - `dyn_model`: The dynamic model used for the visualization.
+  - `visual_delays` (int): Delay between steps in the visualization for better observation
+  - **Description**: Visualizes the kinematic trajectory of the robot using the specified joint configurations and dynamic model, enhancing the understanding of motion and dynamics.
+
+## Part 13: Additional Utility Functions
+
+#### Method: `GetFootFriction(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Description**: Retrieves the current friction coefficient of the robot's feet, aiding in tuning contact dynamics.
+
+#### Method: `SetFootRestitution(foot_restitution, index=0)`
+- **Parameters**:
+  - `foot_restitution`: The restitution coefficient for the robot's feet.
+  - `index` (int): Index of the robot.
+- **Description**: Sets the coefficient of restitution for the feet, impacting how bouncy the contact interactions are during the simulation.
+
+## Part 14: Contact Dynamics and Feedback
+
+#### Method: `GetFootRestitution(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Description**: Retrieves the restitution coefficient of the robot’s feet, which is crucial for simulations involving dynamic interactions with the environment, such as jumping or running.
+
+## Part 15: Friction and Interaction Parameters
+
+#### Method: `SetJointFriction(joint_frictions, index=0)`
+- **Parameters**:
+  - `joint_frictions`: Array of friction values for each joint.
+  - `index` (int): Index of the robot.
+- **Description**: Sets the friction values for each joint, influencing how each joint responds to forces and torques during the simulation.
+
+## Part 16: System States and Properties
+
+#### Method: `GetNumKneeJoints(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: The number of knee joints, useful in configurations where robots have legs with multiple joints.
+- **Description**: Provides the count of knee joints for the specified robot, aiding in configurations and control strategies specific to legged locomotion.
+
+#### Method: `_AddSensorNoise(sensor_values, noise_stdev)`
+- **Parameters**:
+  - `sensor_values`: Array of sensor readings.
+  - `noise_stdev`: Standard deviation of the noise to add.
+- **Returns**: Sensor values adjusted with added Gaussian noise.
+- **Description**: Adds noise to sensor readings to simulate real-world inaccuracies and test the robustness of sensing and control algorithms.
+
+## Part 17: Motor and Movement Control
+
+#### Method: `SetMotorGains(kp, kd, index=0)`
+- **Parameters**:
+  - `kp`: Proportional gain(s) for motor control.
+  - `kd`: Derivative gain(s) for motor control.
+  - `index` (int): Index of the robot.
+- **Description**: Sets the proportional and derivative gains for motor control, essential for tuning the control loops for precise and stable movements.
+
+#### Method: `GetMotorGains(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: Current proportional and derivative gains for the motors.
+- **Description**: Retrieves the current motor gains, useful for diagnostics and adjustments during runtime.
+
+## Part 18: Simulation Details and Adjustments
+
+#### Method: `SetTimeSteps(simulation_step)`
+- **Parameters**:
+  - `simulation_step`: The simulation timestep to set.
+- **Description**: Adjusts the timestep of the simulation, affecting the simulation's resolution and the accuracy of dynamic calculations.
+
+#### Method: `ResetPose()`
+- **Description**: Resets the robot to its initial configuration or pose, commonly used after a simulation error or for reinitializing the simulation state.
+## Part 19: Diagnostics and Information Retrieval
+
+#### Method: `GetBotDynamicsInfo(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Description**: Prints detailed dynamics information about the robot, such as masses, inertia, and friction parameters, crucial for debugging and system analysis.
+
+## Part 20: Joint and Link Dynamics
+
+#### Method: `GetJointInfo(body_id, joint_id)`
+- **Parameters**:
+  - `body_id` (int): The unique identifier for the robot body.
+  - `joint_id` (int): The index of the joint.
+- **Returns**: Detailed information about the specified joint.
+- **Description**: Retrieves comprehensive data about a specific joint, including its type, limits, and physical properties. This information is crucial for precise control and simulation of joint dynamics.
+
+#### Method: `GetBotJointsInfo(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Description**: Outputs detailed information about all joints of a robot. This method is useful for debugging and understanding the mechanical constraints and capabilities of each joint within the robot.
+
+#### Method: `GetBotJointsLimit(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: Lower and upper limits for each joint.
+- **Description**: Provides the movement limits for each joint, essential for ensuring that control algorithms do not exceed mechanical capabilities.
+
+#### Method: `GetBotJointsVelLimit(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: Maximum velocity limits for each joint.
+- **Description**: Fetches the velocity limits for the joints, which are crucial for dynamic simulations and ensuring the robot operates within safe parameters.
+
+#### Method: `GetBotJointsTorqueLimit(index=0)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: Torque limits for each joint.
+- **Description**: Retrieves the torque limits for the joints, informing control strategies and protecting the mechanical integrity of the robot.
+
+## Part 21: Simulation Management
+
+#### Method: `ResetPose()`
+- **Description**: Resets the robot to a predefined initial pose, typically used for starting simulations from a known state or recovering from unstable conditions.
+
+#### Method: `SetjointPosition(position, index=0)`
+- **Parameters**:
+  - `position`: Desired joint positions for initialization or kinematic analysis.
+  - `index` (int): Index of the robot.
+- **Description**: Sets the joint positions directly, bypassing dynamics. Useful for setting initial conditions or for kinematic studies.
+
+#### Method: `SetfloatingBasePositionAndOrientation(position, orientation, index=0)`
+- **Parameters**:
+  - `position`: The desired position of the robot's base.
+  - `orientation`: The desired orientation of the robot's base.
+  - `index` (int): Index of the robot.
+- **Description**: Directly sets the position and orientation of the robot's floating base, crucial for simulations involving floating base dynamics.
+
+## Part 22: Visualization and Debugging
+
+#### Method: `KinematicVisualizer(q_res, dyn_model, visual_delays=0)`
+- **Parameters**:
+  - `q_res`: Joint configurations over time for visualization.
+  - `dyn_model`: The dynamic model used for the visualization.
+  - `visual_delays` (int): Delay between steps in visualization for clarity.
+- **Description**: Visualizes the trajectory of the robot using specified joint configurations, aiding in understanding motion dynamics and debugging control algorithms.
+
+## Part 23: Advanced Kinematic and Dynamic Analysis
+
+#### Method: `GetMotorAngles(index)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: Array of current motor angles.
+- **Description**: Retrieves the angles of the motors, essential for state feedback in control systems and motion analysis.
+
+#### Method: `GetMotorVelocities(index)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: Array of current motor velocities.
+- **Description**: Provides the velocities of the motors, important for dynamic control and performance monitoring.
+
+#### Method: `GetLinkPositionAndOrientation(link_name, joint_or_com, index)`
+- **Parameters**:
+  - `link_name` (str): Name of the link.
+  - `joint_or_com` (str): Specifies whether to return the joint position or the center of mass position.
+  - `index` (int): Index of the robot.
+- **Returns**: Tuple containing the position and orientation of the specified link.
+- **Description**: Retrieves the position and orientation of a specified link, crucial for understanding the spatial configuration of robot components.
+## Part 24: Simulation State Updates and Control Commands
+
+#### Method: `SetjointPosition(position, index)`
+- **Parameters**:
+  - `position` (array): Desired joint positions.
+  - `index` (int): Index of the robot.
+- **Description**: Sets the joint positions of the robot, useful for direct kinematic control and testing.
+
+#### Method: `SetfloatingBasePositionAndOrientation(position, orientation, index)`
+- **Parameters**:
+  - `position` (array): Target position for the robot’s base.
+  - `orientation` (array): Target orientation for the robot’s base.
+  - `index` (int): Index of the robot.
+- **Description**: Sets the position and orientation of the robot's floating base, important for tasks requiring precise base placement.
+
+## Part 25: Observational and Environmental Interaction
+
+#### Method: `ComputeFootGRF()`
+- **Returns**: Dictionary containing the ground reaction forces for each foot.
+- **Description**: Computes and returns the ground reaction forces at each foot, a key component in dynamic simulations for walking or balancing robots.
+
+#### Method: `GetBasePosition(index)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: The position of the robot's base.
+- **Description**: Retrieves the current position of the robot's base, useful for tracking and navigation tasks.
+
+#### Method: `GetBaseOrientation(index)`
+- **Parameters**:
+  - `index` (int): Index of the robot.
+- **Returns**: The orientation of the robot's base in quaternion format.
+- **Description**: Fetches the current orientation of the robot's base, crucial for tasks that involve orientation-dependent operations or control strategies.
+
+## Part 26: Joint Information
+
+#### Method: `GetJointInfo(body_id, joint_id)`
+- **Parameters**:
+  - `body_id`: The ID of the robot body.
+  - `joint_id`: The specific joint ID for which information is requested.
+- **Returns**: A tuple containing detailed information about the specified joint.
+- **Description**: Provides comprehensive information about a specific joint, including its name, type, limits, and dynamics properties, which is crucial for detailed analysis and control of individual joints.
+
+#### Method: `GetBotJointsInfo(index=0)`
+- **Parameters**:
+  - `index`: Index of the robot in case of multiple robots.
+- **Description**: Prints detailed information about all joints of the specified robot, aiding in debugging and system analysis.
+
+## Part 27: Simulation Control
+
+#### Method: `SetTimeSteps(simulation_step)`
+- **Parameters**:
+  - `simulation_step`: The time step for the simulation.
+- **Description**: Sets the time step for the simulation, allowing for control over the simulation's resolution and speed.
+
+#### Method: `ResetPose()`
+- **Description**: Resets the robot to its initial pose, typically used at the start of a simulation or after a significant disturbance to reestablish a known state.
+
+## Part 28: Dynamics and State Information
+
+#### Method: `GetSystemState(fixed_base=False, base_vel_base_frame=False, index=0)`
+- **Parameters**:
+  - `fixed_base` (bool): If true, assumes the robot has a fixed base.
+  - `base_vel_base_frame` (bool): If true, returns the base velocity in the body frame.
+  - `index` (int): Index of the robot, if handling multiple robots.
+- **Returns**: The full state of the system, including positions, orientations, and velocities.
+- **Description**: Retrieves the full state of the system, which is crucial for control and monitoring purposes, providing a comprehensive snapshot of the current dynamics.
+## Part 29: Advanced Kinematic and Dynamic Analysis
+
+#### Method: `DirectDynamicsActuatedNoContact(tau, previous_state=False)`
+- **Parameters**:
+  - `tau`: The torque input for the robot.
+  - `previous_state`: If true, uses the previous state for dynamics calculations.
+- **Returns**: The resulting acceleration from the applied torque, excluding contact forces.
+- **Description**: Calculates the direct dynamics of the actuated robot, assuming no contact with the environment, which is useful for simulations focusing on airborne or swimming robots.
+
+## Part 30: Position and Orientation
+
+#### Method: `GetBasePosition(index=0)`
+- **Parameters**:
+  - `index`: Index of the robot in case of multiple robots.
+- **Returns**: The position of the robot's base in the world frame.
+- **Description**: Retrieves the current position of the robot's base, essential for tracking and control purposes.
+
+#### Method: `GetBaseOrientation(index=0)`
+- **Parameters**:
+  - `index`: Index of the robot in case of multiple robots.
+- **Returns**: The orientation of the robot's base in quaternion format.
+- **Description**: Fetches the current orientation of the robot's base, which is critical for tasks that require precise orientation control, such as balancing and manipulation.
+
+## Part 31: Joint Information
+
+#### Method: `GetJointInfo(body_id, joint_id)`
+- **Parameters**:
+  - `body_id`: The ID of the robot body.
+  - `joint_id`: The specific joint ID for which information is requested.
+- **Returns**: A tuple containing detailed information about the specified joint.
+- **Description**: Provides comprehensive information about a specific joint, including its name, type, limits, and dynamics properties, which is crucial for detailed analysis and control of individual joints.
+
+#### Method: `GetBotJointsInfo(index=0)`
+- **Parameters**:
+  - `index`: Index of the robot in case of multiple robots.
+- **Description**: Prints detailed information about all joints of the specified robot, aiding in debugging and system analysis.
+
+## Part 32: Simulation Control
+
+#### Method: `SetTimeSteps(simulation_step)`
+- **Parameters**:
+  - `simulation_step`: The time step for the simulation.
+- **Description**: Sets the time step for the simulation, allowing for control over the simulation's resolution and speed.
+
+#### Method: `ResetPose()`
+- **Description**: Resets the robot to its initial pose, typically used at the start of a simulation or after a significant disturbance to reestablish a known state.
+
+## Part 33: Dynamics and State Information
+
+#### Method: `GetSystemState(fixed_base=False, base_vel_base_frame=False, index=0)`
+- **Parameters**:
+  - `fixed_base` (bool): If true, assumes the robot has a fixed base.
+  - `base_vel_base_frame` (bool): If true, returns the base velocity in the body frame.
+  - `index` (int): Index of the robot, if handling multiple robots.
+- **Returns**: The full state of the system, including positions, orientations, and velocities.
+- **Description**: Retrieves the full state of the system, which is crucial for control and monitoring purposes, providing a comprehensive snapshot of the current dynamics.
+
