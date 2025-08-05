@@ -1,0 +1,30 @@
+<mujoco model="mppi">
+  <compiler angle="radian"/>
+
+  <asset>
+    <mesh name="base_link" content_type="model/stl" file="base_link.stl"/>
+    <mesh name="Link_1" content_type="model/stl" file="Link_1.stl"/>
+    <mesh name="Link_2" content_type="model/stl" file="Link_2.stl"/>
+  </asset>
+
+<actuator>
+  <motor joint="Joint_1" name="act1" gear="1" ctrlrange="-1 1"/>
+  <motor joint="Joint_2" name="act2" gear="1" ctrlrange="-1 1"/>
+</actuator>
+
+
+
+  <worldbody>
+    <geom type="mesh" rgba="1 1 1 1" mesh="base_link"/>
+    <body name="Link_1" pos="0 -0.0735 -0.00025" quat="0.707107 -0.707107 0 0">
+      <inertial pos="-0.00162343 -6.97757e-06 -0.11052" quat="0.706733 -0.00724676 -0.00741977 0.707404" mass="0.0688716" diaginertia="2.9945e-05 2.45123e-05 1.2191e-05"/>
+      <joint name="Joint_1" pos="0 0 0" axis="1 0 0"/>
+      <geom type="mesh" rgba="1 0.94902 0.898039 1" mesh="Link_1"/>
+      <body name="Link_2" pos="0 0 -0.1608" quat="0 1 0 0">
+        <inertial pos="-0.00195 0 0.0203738" quat="0.5 0.5 0.5 0.5" mass="0.00521037" diaginertia="1.74753e-06 1.654e-06 6.73563e-07"/>
+        <joint name="Joint_2" pos="0 0 0" axis="1 0 0"/>
+        <geom type="mesh" rgba="1 1 1 1" mesh="Link_2"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

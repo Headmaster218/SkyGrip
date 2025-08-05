@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="mppi">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.000188268183171825 -0.0310733488289291 -8.49482063759173E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.130648831366131" />
+      <inertia
+        ixx="6.10981574033943E-05"
+        ixy="-1.18102281220313E-09"
+        ixz="8.32028477274158E-18"
+        iyy="7.26633562824158E-05"
+        iyz="-1.83418924424448E-21"
+        izz="6.21456866560917E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="base_link.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="base_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="Link_1">
+    <inertial>
+      <origin
+        xyz="-0.00162343119587027 -6.97756980404233E-06 -0.110519657603286"
+        rpy="0 0 0" />
+      <mass
+        value="0.0688716456981545" />
+      <inertia
+        ixx="2.45070484705432E-05"
+        ixy="-5.23177680888989E-09"
+        ixz="2.55497410979275E-07"
+        iyy="2.99449727269608E-05"
+        iyz="4.41092570441378E-09"
+        izz="1.21963011128793E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Link_1.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 0.949019607843137 0.898039215686275 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Link_1.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_1"
+    type="continuous">
+    <origin
+      xyz="0 -0.0735 -0.000250000000000003"
+      rpy="-1.5707963267949 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="Link_1" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+
+<transmission name="Joint_1_trans">
+  <type>transmission_interface/SimpleTransmission</type>
+  <joint name="Joint_1">
+    <hardwareInterface>EffortJointInterface</hardwareInterface>
+  </joint>
+  <actuator name="Joint_1_motor">
+    <mechanicalReduction>1</mechanicalReduction>
+  </actuator>
+</transmission>
+
+  <link
+    name="Link_2">
+    <inertial>
+      <origin
+        xyz="-0.00195000000000316 3.93294338069117E-16 0.0203738024711327"
+        rpy="0 0 0" />
+      <mass
+        value="0.00521037344424208" />
+      <inertia
+        ixx="6.73562569173527E-07"
+        ixy="-8.90149055108561E-21"
+        ixz="-9.37609510021427E-20"
+        iyy="1.74752931998961E-06"
+        iyz="-9.17755304799327E-21"
+        izz="1.65399995368875E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Link_2.stl" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="Link_2.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="Joint_2"
+    type="continuous">
+    <origin
+      xyz="0 0 -0.1608"
+      rpy="3.14159265358979 0 0" />
+    <parent
+      link="Link_1" />
+    <child
+      link="Link_2" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+
+<transmission name="Joint_2_trans">
+  <type>transmission_interface/SimpleTransmission</type>
+  <joint name="Joint_2">
+    <hardwareInterface>EffortJointInterface</hardwareInterface>
+  </joint>
+  <actuator name="Joint_2_motor">
+    <mechanicalReduction>1</mechanicalReduction>
+  </actuator>
+</transmission>
+
+</robot>
