@@ -1,7 +1,7 @@
 from dynamixel_sdk import *  # Dynamixel SDK
 import numpy as np
 class RealRobotController:
-    def __init__(self, device_name="/dev/ttyUSB0", baudrate=57600, dxl_ids=[0, 1]):
+    def __init__(self, device_name="/dev/ttyUSB0", baudrate=115200, dxl_ids=[0, 1]):
         self.DEVICENAME = device_name
         self.BAUDRATE = baudrate
         self.DXL_IDS = dxl_ids

@@ -26,7 +26,7 @@ class UnifiedRobotController:
         """
         返回当前舵机位置（单位：弧度），长度与 self.DXL_IDS 一致
         """
-        real_offset = np.radians(np.array([115.0, 135.0]) )       # 实物环境的偏移（deg）
+        real_offset = np.radians(np.array([115.0, 180.0]) )       # 实物环境的偏移（deg）
         raw_pos =  self.real.get_joint_positions()
         return raw_pos - real_offset
 
@@ -36,7 +36,7 @@ class UnifiedRobotController:
 
         # 设置偏移
         sim_offset = np.array([0,0])          # 仿真环境的偏移（rad）
-        real_offset = np.array([115.0, 135.0])        # 实物环境的偏移（deg）
+        real_offset = np.array([115.0, 180.0])        # 实物环境的偏移（deg）
 
         # 给仿真传入的目标值（弧度）
         sim_q_des = np.array(q_des) + sim_offset

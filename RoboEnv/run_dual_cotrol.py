@@ -6,7 +6,7 @@ import pybullet as p
 controller = UnifiedRobotController("mppi.json", use_sim=True, use_real=True)
 
 class SmoothPositionController:
-    def __init__(self, n_joints, max_vel=10.0, accel=4.0, dt=0.001):
+    def __init__(self, n_joints, max_vel=2.0, accel=2.0, dt=0.001):
         self.n = n_joints
         self.max_vel = max_vel
         self.accel = accel
@@ -50,7 +50,7 @@ class SmoothPositionController:
 
 dt = 0.001  # 控制周期
 
-smooth_controller = SmoothPositionController(n_joints=2, max_vel=1.0, accel=2.0, dt=0.002)
+smooth_controller = SmoothPositionController(n_joints=2, max_vel=1, accel=1, dt=0.002)
 
 if controller.use_real:
     startpos =  controller.get_joint_positions()
