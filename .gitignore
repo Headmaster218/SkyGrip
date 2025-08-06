@@ -5,3 +5,9 @@
 Mujoco/urdfpy
 
 Mujoco/MUJOCO_LOG.TXT
+
+3D Model/.DS_Store
+
+.DS_Store
+
+*.3mf
