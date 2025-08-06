@@ -1,0 +1,22 @@
+base motor:
+XM430-W210
+82g
+2.7NM@11.1V, 3NM@12v, 2.7NM@14.8v
+
+connector1:
+13g
+
+column:
+9g
+
+arm motor1:
+XM430-W250-T
+57.2g
+1.0NM@9V, 1.4NM@11.1v, 1.5NM@12v
+
+connector 2:
+weight: 4g
+
+claw:
+weight 100g
+
