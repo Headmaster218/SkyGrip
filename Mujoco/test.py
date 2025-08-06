@@ -2,6 +2,7 @@ import mujoco
 from mujoco import viewer
 import numpy as np
 from dynamixel_sdk import *  # Dynamixel SDK
+import time
 
 model = mujoco.MjModel.from_xml_path("mjmodel.xml")
 data = mujoco.MjData(model)
@@ -17,9 +18,11 @@ class RealRobotController:
         self.ADDR_GOAL_POSITION = 116  # 4 bytes
         self.LEN_GOAL_POSITION = 4
         self.ADDR_PRESENT_POSITION = 132  # 4 bytes
-        self.TORQUE_ENABLE = 0
+        # self.TORQUE_ENABLE = 1
 
-        self.angle_offset = [-120,180]
+        self.angle_offset = [-210,180]
+        self.max_torque_per_joint = [4.5, 1]
+        self.max_pwm_val = 855
 
         # 初始化串口和协议处理器
         self.portHandler = PortHandler(self.DEVICENAME)
@@ -31,22 +34,37 @@ class RealRobotController:
         if not self.portHandler.setBaudRate(self.BAUDRATE):
             raise RuntimeError("❌ 设置波特率失败")
 
-        # 启用力矩
-        for dxl_id in self.DXL_IDS:
-            dxl_comm_result, dxl_error = self.packetHandler.write1ByteTxRx(
-                self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_ENABLE)
-            if dxl_comm_result != COMM_SUCCESS:
-                print(f"[ID {dxl_id}] 通信失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
-            elif dxl_error != 0:
-                print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
-            else:
-                print(f"[ID {dxl_id}] 力矩启用 ✅")
+        # # 启用力矩
+        # for dxl_id in self.DXL_IDS:
+        #     dxl_comm_result, dxl_error = self.packetHandler.write1ByteTxRx(
+        #         self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_ENABLE)
+        #     if dxl_comm_result != COMM_SUCCESS:
+        #         print(f"[ID {dxl_id}] 通信失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
+        #     elif dxl_error != 0:
+        #         print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
+        #     else:
+        #         print(f"[ID {dxl_id}] 力矩启用 ✅")
 
         # 初始化同步写对象
         self.groupSyncWrite = GroupSyncWrite(
             self.portHandler, self.packetHandler, self.ADDR_GOAL_POSITION, self.LEN_GOAL_POSITION
         )
+        # 当前模式缓存（ID → mode），mode：0=PWM, 1=Current, 3=Position 等
+        self.current_mode_map = {dxl_id: None for dxl_id in self.DXL_IDS}
 
+
+    def _set_control_mode_if_needed(self, dxl_id, target_mode):
+        """
+        如果当前模式不是目标模式，则切换舵机控制模式
+        target_mode: int，0=PWM, 3=Position 等
+        """
+        MODE_ADDR = 11  # Control Mode
+        if self.current_mode_map[dxl_id] != target_mode:
+            # 切换模式流程：关闭力矩 → 修改模式 → 启用力矩
+            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 0)
+            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, MODE_ADDR, target_mode)
+            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 1)
+            self.current_mode_map[dxl_id] = target_mode
 
     def get_joint_positions(self):
         """
@@ -70,25 +88,29 @@ class RealRobotController:
 
         return current_positions
 
-
     def degree_to_position(self, degree):
         degree = degree % 360
         return int((degree / 360.0) * 4095)
     
-
     def send_joint_positions(self, degrees, check_response=False):
         """
-        degrees: List[float], 每个关节的角度（单位：度），必须与 self.DXL_IDS 一一对应
-        使用 SyncWrite 同步发送角度指令，提高效率
-        
-        check_response: bool, 是否检查通信返回值，默认不检查以提高速度
+        发送目标角度（单位：度）给舵机，自动切换至 Position 控制模式
+        degrees: List[float]，每个关节的目标角度（0~360 度）
         """
         assert hasattr(self, "DXL_IDS"), "DXL_IDS 尚未初始化"
         assert len(degrees) == len(self.DXL_IDS), "角度与舵机ID数量不一致"
 
-        self.groupSyncWrite.clearParam()
+        ADDR_GOAL_POSITION = self.ADDR_GOAL_POSITION
+        LEN_GOAL_POSITION = self.LEN_GOAL_POSITION
+        POSITION_MODE = 3
+
+        groupSyncWrite = GroupSyncWrite(self.portHandler, self.packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION)
+        groupSyncWrite.clearParam()
 
         for dxl_id, degree in zip(self.DXL_IDS, degrees):
+            # 设置模式（如果需要）
+            self._set_control_mode_if_needed(dxl_id, POSITION_MODE)
+
             pos_val = self.degree_to_position(degree)
             param_goal_pos = [
                 pos_val & 0xFF,
@@ -96,11 +118,11 @@ class RealRobotController:
                 (pos_val >> 16) & 0xFF,
                 (pos_val >> 24) & 0xFF
             ]
-            success = self.groupSyncWrite.addParam(dxl_id, param_goal_pos)
+            success = groupSyncWrite.addParam(dxl_id, param_goal_pos)
             if not success and check_response:
                 print(f"[ID {dxl_id}] ❌ 添加同步参数失败")
 
-        result = self.groupSyncWrite.txPacket()
+        result = groupSyncWrite.txPacket()
 
         if check_response:
             if result != COMM_SUCCESS:
@@ -108,6 +130,53 @@ class RealRobotController:
             else:
                 print("✅ 同步写入成功")
 
+    def send_pwm(self, pwm_vals, check_response=False):
+        """
+        发送 PWM 控制信号到多个舵机
+        pwm_vals: List[int]，单位为 [-885, 885]，与 self.DXL_IDS 一一对应
+        自动切换至 PWM 控制模式
+        """
+        assert len(pwm_vals) == len(self.DXL_IDS), "PWM 数量必须与舵机 ID 数量一致"
+
+        ADDR_GOAL_PWM = 100
+        LEN_PWM = 2
+        PWM_MODE = 16  # 0 = PWM 控制模式
+
+        groupSyncWrite = GroupSyncWrite(self.portHandler, self.packetHandler, ADDR_GOAL_PWM, LEN_PWM)
+        groupSyncWrite.clearParam()
+
+        for dxl_id, pwm in zip(self.DXL_IDS, pwm_vals):
+            # 自动检查并设置控制模式为 PWM
+            self._set_control_mode_if_needed(dxl_id, PWM_MODE)
+
+            pwm = int(np.clip(pwm, -885, 885))
+            param_goal_pwm = [pwm & 0xFF, (pwm >> 8) & 0xFF]
+            success = groupSyncWrite.addParam(dxl_id, param_goal_pwm)
+            if not success and check_response:
+                print(f"[ID {dxl_id}] ❌ 添加 PWM 参数失败")
+
+        result = groupSyncWrite.txPacket()
+
+        if check_response:
+            if result != COMM_SUCCESS:
+                print("❌ PWM 同步写入失败:", self.packetHandler.getTxRxResult(result))
+            else:
+                print("✅ PWM 同步写入成功")
+
+    def send_torque(self, torque_vals, check_response=False):
+        """
+        输入力矩（单位 Nm），自动转换为 PWM 并发送给舵机
+        torque_vals: List[float]，与 dxl_ids 一一对应
+        """
+        assert len(torque_vals) == len(self.DXL_IDS), "力矩数量与舵机 ID 不一致"
+
+        pwm_vals = []
+        for idx, tau in enumerate(torque_vals):
+            max_tau = self.max_torque_per_joint[idx]
+            pwm = (tau / max_tau) * self.max_pwm_val
+            pwm_vals.append(int(np.clip(pwm, -self.max_pwm_val, self.max_pwm_val)))
+
+        self.send_pwm(pwm_vals, check_response=check_response)
 
     def close(self):
         self.portHandler.closePort()
@@ -154,24 +223,70 @@ class RealRobotController:
 
         return qpos, qvel
 
+class SynchronizedTorqueController:
+    def __init__(self, real_robot_controller, mujoco_model, mujoco_data, enable_real=True, enable_sim=True):
+        """
+        real_robot_controller: 实例化后的 RealRobotController
+        mujoco_model, mujoco_data: MuJoCo 模型与数据对象
+        enable_real, enable_sim: 控制是否向现实 / 仿真发送力矩指令
+        """
+        self.real_robot = real_robot_controller
+        self.model = mujoco_model
+        self.data = mujoco_data
+
+    def send_torque(self, torque_vals, check_response=False, enable_sim=True, enable_real=True):
+        """
+        同步向仿真和现实发送力矩控制指令
+        torque_vals: List[float]，单位为 Nm
+        """
+        assert isinstance(torque_vals, (list, tuple, np.ndarray)), "输入应为列表/数组"
+        assert len(torque_vals) == len(self.real_robot.DXL_IDS), "力矩数量必须与舵机 ID 一致"
+
+        # 发送给仿真
+        if enable_sim:
+            for i in range(len(torque_vals)):
+                self.data.ctrl[i] = torque_vals[i]
+
+        # 发送给现实
+        if enable_real:
+            self.real_robot.send_torque(torque_vals, check_response=check_response)
 
 
 def apply_real_state_to_sim(data, joint_qpos, joint_qvel):
-
     data.qpos[:len(joint_qpos)] = joint_qpos
-
     data.qvel[:len(joint_qvel)] = joint_qvel
-
     mujoco.mj_forward(model, data)  # 更新派生量
 
 real_controller = RealRobotController()
 
+sync_ctrl = SynchronizedTorqueController(
+    real_robot_controller=real_controller,
+    mujoco_model=model,
+    mujoco_data=data,
+    enable_real=True,
+    enable_sim=False
+)
+
+
+
 with viewer.launch_passive(model, data) as v:
+    step_counter = 0
+    torque_val = np.array([0, 0])  # 初始力矩
+
     while v.is_running():
-        # 获取实际关节状态
-        joint_qpos, joint_qvel = real_controller.get_joint_state()
-        
-        # 将实际状态应用到仿真中
-        apply_real_state_to_sim(data, joint_qpos, joint_qvel)
+        # 每 N 步反向力矩
+        if step_counter % 1 == 0:
+            torque_val = -torque_val
+            apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
+
+        # 控制仿真 & 实物
+        sync_ctrl.send_torque(torque_val, enable_real=True)
+
+        # 推进仿真一帧
         # mujoco.mj_step(model, data)
+
+        # 可视化刷新
         v.sync()
+        step_counter += 1
+        time.sleep(0.01)  # 控制帧率，避免过快
+
