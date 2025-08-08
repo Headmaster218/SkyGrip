@@ -8,16 +8,16 @@
     name="base_link">
     <inertial>
       <origin
-        xyz="0.10107 -0.033604 0.041506"
+        xyz="-1.928E-06 0.0086666 0.027403"
         rpy="0 0 0" />
       <mass
         value="1" />
       <inertia
-        ixx="0.0040901"
-        ixy="1.3275E-05"
-        ixz="-5.9029E-08"
-        iyy="0.0055802"
-        iyz="-4.2589E-06"
+        ixx="0.00409"
+        ixy="2.7055E-07"
+        ixz="-2.1861E-08"
+        iyy="0.0055803"
+        iyz="-4.2593E-06"
         izz="0.0094981" />
     </inertial>
     <visual>
@@ -48,7 +48,7 @@
     name="Link_1">
     <inertial>
       <origin
-        xyz="0.023497 -7.0854E-06 -0.08892"
+        xyz="-0.0016184 -7.0854E-06 -0.08892"
         rpy="0 0 0" />
       <mass
         value="0.08" />
@@ -88,8 +88,8 @@
     name="Joint_1"
     type="continuous">
     <origin
-      xyz="0.075884 -0.042123 -0.023898"
-      rpy="-0.00065513 0 -0.0087266" />
+      xyz="0 -2.5E-05 -0.038"
+      rpy="-0.00065513 0 0" />
     <parent
       link="base_link" />
     <child
@@ -106,16 +106,16 @@
     name="Link_2">
     <inertial>
       <origin
-        xyz="0.023165 -1.3323E-15 0.079412"
+        xyz="-0.00195 -1.0507E-15 0.079412"
         rpy="0 0 0" />
       <mass
         value="0.105" />
       <inertia
         ixx="4.0466E-05"
-        ixy="9.0262E-20"
-        ixz="-7.0184E-20"
+        ixy="1.162E-19"
+        ixz="-9.7885E-20"
         iyy="4.165E-05"
-        iyz="2.039E-19"
+        iyz="1.7355E-19"
         izz="2.8062E-05" />
     </inertial>
     <visual>
