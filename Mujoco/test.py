@@ -229,15 +229,15 @@ class SynchronizedTorqueController:
         torque_vals: List[float]，单位为 Nm
         """
         assert isinstance(torque_vals, (list, tuple, np.ndarray)), "输入应为列表/数组"
-        assert len(torque_vals) == len(self.real_robot.DXL_IDS), "力矩数量必须与舵机 ID 一致"
 
         # 发送给仿真
         if enable_sim:
             for i in range(len(torque_vals)):
-                self.data.ctrl[i] = torque_vals[i]*15
+                self.data.ctrl[i] = torque_vals[i]
 
         # 发送给现实
         if enable_real:
+            assert len(torque_vals) == len(self.real_robot.DXL_IDS), "力矩数量必须与舵机 ID 一致"
             self.real_robot.send_torque(torque_vals, check_response=check_response)
 
 
@@ -246,7 +246,12 @@ def apply_real_state_to_sim(data, joint_qpos, joint_qvel):
     data.qvel[:len(joint_qvel)] = joint_qvel
     mujoco.mj_forward(model, data)  # 更新派生量
 
-real_controller = RealRobotController()
+try:
+    real_controller = RealRobotController()
+
+except Exception as e:
+    print(f"❌ 初始化 RealRobotController 失败: {e}")
+    real_controller = None
 
 sync_ctrl = SynchronizedTorqueController(
     real_robot_controller=real_controller,
@@ -260,19 +265,19 @@ sync_ctrl = SynchronizedTorqueController(
 
 with viewer.launch_passive(model, data) as v:
     step_counter = 0
-    torque_val = np.array([0.4, 0.2])  # 初始力矩
+    torque_val = np.array([4, 1])  # 初始力矩
 
     while v.is_running():
         # 每 N 步反向力矩
-        if step_counter % 1 == 0:
+        if step_counter % 30 == 0:
             torque_val = -torque_val
-            apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
+            # apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
 
         # 控制仿真 & 实物
-        sync_ctrl.send_torque(torque_val, enable_real=True, enable_sim=True)
+        sync_ctrl.send_torque(torque_val, enable_real=False, enable_sim=True)
 
         # 推进仿真一帧
-        # mujoco.mj_step(model, data)
+        mujoco.mj_step(model, sync_ctrl.data)
 
         # 可视化刷新
         v.sync()

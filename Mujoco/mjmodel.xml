@@ -1,6 +1,6 @@
-<mujoco model="mppi">
+<mujoco model="SkyGrip_URDF">
   <compiler angle="radian"/>
-  
+
   <option timestep="0.001" gravity="0 0 -9.81"/>
   
   <asset>
@@ -10,23 +10,24 @@
   </asset>
 
   <actuator>
-    <motor joint="Joint_1" name="act1" gear="1" ctrlrange="-1 1"/>
-    <motor joint="Joint_2" name="act2" gear="1" ctrlrange="-1 1"/>
+    <motor joint="Joint_1" name="act1" gear="1" ctrlrange="-6 6"/>
+    <motor joint="Joint_2" name="act2" gear="1" ctrlrange="-4 4"/>
   </actuator>
+
 
   <worldbody>
     <!-- base_link 是真正的根 body -->
-    <body name="base_link" pos="0 0 0" quat="1 0 0 0">
-      <inertial mass="1.078" pos="0 0 0" diaginertia="1e-4 1e-4 1e-4"/>  <!-- 🔧 添加惯性！ -->
+    <body name="base_link" pos="0 0 0">
+      <inertial mass="1" pos="1.928E-06 0.0086666 0.027403" diaginertia="1e-4 1e-4 1e-4"/>  <!-- 🔧 添加惯性！ -->
       <geom type="mesh" mesh="base_link" rgba="1 1 1 1"/>
 
-      <body name="Link_1" pos="0.076125 -0.042332 -0.059398" quat="1 0 0 0">
-        <inertial pos="0.023282 -7.0854E-06 -0.08892" mass="0.081" diaginertia="3e-5 2.5e-5 1.2e-5"/>
-        <joint name="Joint_1" pos="0 0 0" axis="1 0 0" damping="0.00" frictionloss="0.00"/>
+      <body name="Link_1" pos="0 -2.5e-05 -0.038" quat="1 0 0 0">
+        <inertial pos="-0.0016184 -7.0854E-06 -0.08892" mass="0.08" diaginertia="3e-5 2.5e-5 1.2e-5"/>
+        <joint name="Joint_1" pos="0 0 0" axis="1 0 0" damping="0.05" frictionloss="0.1"/>
         <geom type="mesh" mesh="Link_1" rgba="1 0.95 0.9 1"/>
 
-        <body name="Link_2" pos="0 0 -0.1308" quat="0 1 0 0">
-          <inertial pos="0.02295 1.1102E-15 0.079412" mass="0.104" diaginertia="2e-5 2e-5 2e-5"/>
+        <body name="Link_2" pos="0 0 -0.1308" quat="0 -1 0 0">
+          <inertial pos="-0.00195 -1.0507E-15 0.079412" mass="0.104" diaginertia="2e-5 2e-5 2e-5"/>
           <joint name="Joint_2" pos="0 0 0" axis="1 0 0" damping="0.05" frictionloss="0.1"/>
           <geom type="mesh" mesh="Link_2" rgba="1 1 1 1"/>
         </body>
@@ -34,6 +35,3 @@
     </body>
   </worldbody>
 </mujoco>
-
-
-
