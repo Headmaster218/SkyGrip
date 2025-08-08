@@ -1,7 +1,24 @@
+Drone:
+386g
+
+battery:
+386g
+
+drone2raspi:
+15g
+
+raspi:
+79g
+
+drone2motor:
+10g
+
 base motor:
 XM430-W210
 82g
 2.7NM@11.1V, 3NM@12v, 2.7NM@14.8v
+
+------------------958g↑--------------------
 
 connector1:
 13g
