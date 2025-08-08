@@ -20,7 +20,7 @@ class RealRobotController:
         self.ADDR_PRESENT_POSITION = 132  # 4 bytes
         # self.TORQUE_ENABLE = 1
 
-        self.angle_offset = [-210,180]
+        self.angle_offset = [-115,180]
         self.max_torque_per_joint = [4.5, 1]
         self.max_pwm_val = 855
 
@@ -33,17 +33,6 @@ class RealRobotController:
             raise RuntimeError("❌ 串口打开失败")
         if not self.portHandler.setBaudRate(self.BAUDRATE):
             raise RuntimeError("❌ 设置波特率失败")
-
-        # # 启用力矩
-        # for dxl_id in self.DXL_IDS:
-        #     dxl_comm_result, dxl_error = self.packetHandler.write1ByteTxRx(
-        #         self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, self.TORQUE_ENABLE)
-        #     if dxl_comm_result != COMM_SUCCESS:
-        #         print(f"[ID {dxl_id}] 通信失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
-        #     elif dxl_error != 0:
-        #         print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
-        #     else:
-        #         print(f"[ID {dxl_id}] 力矩启用 ✅")
 
         # 初始化同步写对象
         self.groupSyncWrite = GroupSyncWrite(
@@ -245,7 +234,7 @@ class SynchronizedTorqueController:
         # 发送给仿真
         if enable_sim:
             for i in range(len(torque_vals)):
-                self.data.ctrl[i] = torque_vals[i]
+                self.data.ctrl[i] = torque_vals[i]*15
 
         # 发送给现实
         if enable_real:
@@ -271,7 +260,7 @@ sync_ctrl = SynchronizedTorqueController(
 
 with viewer.launch_passive(model, data) as v:
     step_counter = 0
-    torque_val = np.array([0, 0])  # 初始力矩
+    torque_val = np.array([0.4, 0.2])  # 初始力矩
 
     while v.is_running():
         # 每 N 步反向力矩
@@ -280,7 +269,7 @@ with viewer.launch_passive(model, data) as v:
             apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
 
         # 控制仿真 & 实物
-        sync_ctrl.send_torque(torque_val, enable_real=True)
+        sync_ctrl.send_torque(torque_val, enable_real=True, enable_sim=True)
 
         # 推进仿真一帧
         # mujoco.mj_step(model, data)
