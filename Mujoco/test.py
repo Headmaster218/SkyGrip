@@ -22,6 +22,11 @@ class RealRobotController:
         self.max_torque_per_joint = [4.5, 1]
         self.max_pwm_val = 855
 
+        self.e_break = [0.235, 0.372]  # 电子制动系数
+        self.stall_torque = [3.0, 1.5]  # 每个关节的额定力矩（Nm）
+        self.full_speed = [77 * 2 * np.pi / 60 , 57 * 2 * np.pi / 60]  # 每个关节的最大速度（弧度/秒）
+
+
         # 初始化串口和协议处理器
         self.portHandler = PortHandler(self.DEVICENAME)
         self.packetHandler = PacketHandler(self.PROTOCOL_VERSION)
@@ -221,6 +226,7 @@ class SynchronizedTorqueController:
         self.model = mujoco_model
         self.data = mujoco_data
 
+
     def send_torque(self, torque_vals, check_response=False, enable_sim=True, enable_real=True):
         """
         同步向仿真和现实发送力矩控制指令
@@ -231,7 +237,10 @@ class SynchronizedTorqueController:
         # 发送给仿真
         if enable_sim:
             for i in range(len(torque_vals)):
-                self.data.ctrl[i] = torque_vals[i]
+                self.data.ctrl[i] = \
+                      torque_vals[i] - \
+                      (self.data.qvel[i] - (torque_vals[i] / self.real_robot.stall_torque[i])* self.real_robot.full_speed[i])\
+                      * self.real_robot.e_break[i]
 
         # 发送给现实
         if enable_real:
@@ -295,4 +304,6 @@ with viewer.launch_passive(model, data) as v:
         elapsed_time = time.time() - start_time
         if elapsed_time < model.opt.timestep:
             time.sleep(model.opt.timestep - elapsed_time)
+        else:
+            print(f"⚠️ 步进时间过长: {elapsed_time:.3f} 秒，超过了设定的时间步长 {model.opt.timestep} 秒")
 
