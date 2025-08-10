@@ -4,8 +4,6 @@ import numpy as np
 from dynamixel_sdk import *  # Dynamixel SDK
 import time
 
-model = mujoco.MjModel.from_xml_path("mjmodel.xml")
-data = mujoco.MjData(model)
 
 class RealRobotController:
     def __init__(self, device_name="/dev/ttyUSB0", baudrate=115200, dxl_ids=[0, 1]):
@@ -241,6 +239,14 @@ class SynchronizedTorqueController:
             self.real_robot.send_torque(torque_vals, check_response=check_response)
 
 
+model = mujoco.MjModel.from_xml_path("mjmodel.xml")
+model.opt.timestep = 0.01  # 设置仿真时间步长为 0.01 秒
+
+data = mujoco.MjData(model)
+
+#set timestep
+
+
 def apply_real_state_to_sim(data, joint_qpos, joint_qvel):
     data.qpos[:len(joint_qpos)] = joint_qpos
     data.qvel[:len(joint_qvel)] = joint_qvel
@@ -265,16 +271,18 @@ sync_ctrl = SynchronizedTorqueController(
 
 with viewer.launch_passive(model, data) as v:
     step_counter = 0
-    torque_val = np.array([4, 1])  # 初始力矩
+    torque_val = np.array([0.5, 0.2])  # 初始力矩
 
     while v.is_running():
+
+        start_time = time.time()
         # 每 N 步反向力矩
-        if step_counter % 30 == 0:
+        if step_counter % 100 == 0:
             torque_val = -torque_val
-            # apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
+            apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
 
         # 控制仿真 & 实物
-        sync_ctrl.send_torque(torque_val, enable_real=False, enable_sim=True)
+        sync_ctrl.send_torque(torque_val, enable_real=True, enable_sim=True)
 
         # 推进仿真一帧
         mujoco.mj_step(model, sync_ctrl.data)
@@ -282,5 +290,9 @@ with viewer.launch_passive(model, data) as v:
         # 可视化刷新
         v.sync()
         step_counter += 1
-        time.sleep(0.01)  # 控制帧率，避免过快
+
+        # wait for next frame
+        elapsed_time = time.time() - start_time
+        if elapsed_time < model.opt.timestep:
+            time.sleep(model.opt.timestep - elapsed_time)
 

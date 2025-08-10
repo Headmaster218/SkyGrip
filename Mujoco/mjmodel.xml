@@ -1,7 +1,7 @@
 <mujoco model="SkyGrip_URDF">
   <compiler angle="radian"/>
 
-  <option timestep="0.001" gravity="0 0 -9.81"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
   
   <asset>
     <mesh name="base_link" file="base_link.STL"/>
@@ -19,17 +19,17 @@
     <!-- base_link 是真正的根 body -->
     <body name="base_link" pos="0 0 0">
       <inertial mass="1" pos="1.928E-06 0.0086666 0.027403" diaginertia="0.00409 0.0055803 0.0094981"/>  <!-- 🔧 添加惯性！ -->
-      <geom type="mesh" mesh="base_link" rgba="1 1 1 1"/>
+      <geom contype="0" conaffinity="0" type="mesh" mesh="base_link" rgba="1 1 1 1"/>
 
       <body name="Link_1" pos="0 -2.5e-05 -0.038" quat="1 0 0 0">
         <inertial pos="-0.0016184 -7.0854E-06 -0.08892" mass="0.08" diaginertia="1.7491E-05 2.2905E-05 1.2e-5"/>
-        <joint name="Joint_1" pos="0 0 0" axis="1 0 0" damping="0.0" frictionloss="0.0"/>
-        <geom type="mesh" mesh="Link_1" rgba="1 0.95 0.9 1"/>
+        <joint name="Joint_1" pos="0 0 0" axis="1 0 0" damping="0.372" frictionloss="0.03"/>
+        <geom contype="0" conaffinity="0" type="mesh" mesh="Link_1" rgba="1 0.95 0.9 1"/>
 
         <body name="Link_2" pos="0 0 -0.1308" quat="0 -1 0 0">
           <inertial pos="-0.00195 -1.0507E-15 0.079412" mass="0.104" diaginertia="4e-5 4.16e-5 2.8e-5"/>
-          <joint name="Joint_2" pos="0 0 0" axis="1 0 0" damping="0.05" frictionloss="0.1"/>
-          <geom type="mesh" mesh="Link_2" rgba="1 1 1 1"/>
+          <joint name="Joint_2" pos="0 0 0" axis="1 0 0" damping="0.235" frictionloss="0.203"/>
+          <geom contype="0" conaffinity="0" type="mesh" mesh="Link_2" rgba="1 1 1 1"/>
         </body>
       </body>
     </body>
