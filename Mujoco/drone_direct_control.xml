@@ -1,0 +1,130 @@
+
+    <mujoco model="drone_arm_system">
+        <compiler angle="radian" meshdir="." />
+        <option timestep="0.001" gravity="0 0 -9.81" integrator="RK4"/>
+        
+        <asset>
+            <mesh name="base_link" file="base_link.STL"/>
+            <mesh name="Link_1" file="Link_1.STL"/>
+            <mesh name="Link_2" file="Link_2.STL"/>
+        </asset>
+        
+        <actuator>
+            <!-- 机械臂关节控制 -->
+            <motor joint="Joint_1" name="act1" gear="1" ctrlrange="-6 6"/>
+            <motor joint="Joint_2" name="act2" gear="1" ctrlrange="-4 4"/>
+        </actuator>
+        
+        <worldbody>
+            <!-- base_link作为无人机本体 -->
+            <body name="base_link" pos="0 0 1.5">
+                <freejoint name="drone_free_joint"/>
+                
+                <!-- 惯性参数 -->
+                <inertial mass="1.0" 
+                         pos="1.928E-06 0.0086666 0.027403" 
+                         diaginertia="0.00409 0.0055803 0.0094981"/>
+                
+                <!-- 机身几何体 -->
+                <geom type="mesh" mesh="base_link" rgba="0.7 0.7 0.9 1"/>
+                
+                <!-- 可视化推力箭头位置 -->
+                <site name="thrust_point" pos="0 0 0" size="0.02" rgba="0 1 1 0.8" type="sphere"/>
+                
+                <!-- 机械臂连接 -->
+                <body name="Link_1" pos="0 -2.5e-05 -0.038">
+                    <inertial pos="-0.0016184 -7.0854E-06 -0.08892" 
+                             mass="0.08" 
+                             diaginertia="3e-5 2.5e-5 1.2e-5"/>
+                    <joint name="Joint_1" pos="0 0 0" axis="1 0 0" 
+                          range="-0.8 0.8" damping="0.5" frictionloss="0.1"/>
+                    <geom type="mesh" mesh="Link_1" rgba="1 0.95 0.9 1"/>
+                    
+                    <body name="Link_2" pos="0 0 -0.1308" quat="0 -1 0 0">
+                        <inertial pos="-0.00195 0 0.079412" 
+                                 mass="0.105" 
+                                 diaginertia="2e-5 2e-5 2e-5"/>
+                        <joint name="Joint_2" pos="0 0 0" axis="1 0 0" 
+                              range="-0.8 0.8" damping="0.5" frictionloss="0.1"/>
+                        <geom type="mesh" mesh="Link_2" rgba="1 1 1 1"/>
+                        
+                        <!-- 末端执行器标记 -->
+                        <site name="end_effector" pos="0 0 0.16" size="0.02" rgba="1 0 0 1"/>
+                    </body>
+                </body>
+            </body>
+            
+            <!-- 地面 -->
+            <geom name="ground" type="plane" size="10 10 0.1" rgba="0.3 0.3 0.3 1"/>
+            
+            <!-- 当前目标位置标记（大绿球） -->
+            <body name="current_target" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.05" rgba="0 1 0 0.8" contype="0" conaffinity="0"/>
+            </body>
+            
+            <!-- 路径点标记（小球） -->
+            <body name="waypoint_0" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_1" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_2" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_3" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_4" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_5" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_6" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_7" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_8" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            <body name="waypoint_9" pos="0 0 1.5" mocap="true">
+                <geom type="sphere" size="0.02" rgba="0.5 0.5 1 0.5" contype="0" conaffinity="0"/>
+            </body>
+            
+            <!-- 已到达路径点标记（用于显示已经通过的点） -->
+            <body name="reached_0" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_1" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_2" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_3" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_4" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_5" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_6" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_7" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_8" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+            <body name="reached_9" pos="0 0 -10" mocap="true">
+                <geom type="sphere" size="0.015" rgba="0 0.8 0 0.7" contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    

@@ -1,0 +1,86 @@
+
+    <mujoco model="drone_arm_system">
+        <compiler angle="radian" meshdir="." />
+        <option timestep="0.001" gravity="0 0 -9.81" integrator="RK4"/>
+        
+        <asset>
+            <mesh name="base_link" file="base_link.STL"/>
+            <mesh name="Link_1" file="Link_1.STL"/>
+            <mesh name="Link_2" file="Link_2.STL"/>
+        </asset>
+        
+        <actuator>
+            <!-- 机械臂关节控制 -->
+            <motor joint="Joint_1" name="act1" gear="1" ctrlrange="-6 6"/>
+            <motor joint="Joint_2" name="act2" gear="1" ctrlrange="-4 4"/>
+        </actuator>
+        
+        <worldbody>
+            <!-- base_link作为无人机本体 -->
+            <body name="base_link" pos="0 0 1.5">
+                <freejoint name="drone_free_joint"/>
+                
+                <!-- 从您的XML文件中的惯性参数 -->
+                <inertial mass="1.0" 
+                         pos="1.928E-06 0.0086666 0.027403" 
+                         diaginertia="0.00409 0.0055803 0.0094981"/>
+                
+                <!-- 机身几何体 -->
+                <geom type="mesh" mesh="base_link" rgba="0.7 0.7 0.9 1"/>
+                
+                <!-- ===== 定义4个旋翼力作用点（Site） ===== -->
+                <!-- 前右旋翼 (Rotor 1) -->
+                <site name="rotor1" pos="0.15 -0.15 0.02" size="0.01" rgba="1 0 0 0.5" type="sphere"/>
+                
+                <!-- 前左旋翼 (Rotor 2) -->
+                <site name="rotor2" pos="0.15 0.15 0.02" size="0.01" rgba="0 1 0 0.5" type="sphere"/>
+                
+                <!-- 后左旋翼 (Rotor 3) -->
+                <site name="rotor3" pos="-0.15 0.15 0.02" size="0.01" rgba="0 0 1 0.5" type="sphere"/>
+                
+                <!-- 后右旋翼 (Rotor 4) -->
+                <site name="rotor4" pos="-0.15 -0.15 0.02" size="0.01" rgba="1 1 0 0.5" type="sphere"/>
+                
+                <!-- 可视化旋翼（不影响动力学） -->
+                <geom name="rotor1_visual" type="cylinder" pos="0.15 -0.15 0.02" 
+                      size="0.08 0.005" rgba="0.3 0.3 0.3 0.6" contype="0" conaffinity="0"/>
+                <geom name="rotor2_visual" type="cylinder" pos="0.15 0.15 0.02" 
+                      size="0.08 0.005" rgba="0.3 0.3 0.3 0.6" contype="0" conaffinity="0"/>
+                <geom name="rotor3_visual" type="cylinder" pos="-0.15 0.15 0.02" 
+                      size="0.08 0.005" rgba="0.3 0.3 0.3 0.6" contype="0" conaffinity="0"/>
+                <geom name="rotor4_visual" type="cylinder" pos="-0.15 -0.15 0.02" 
+                      size="0.08 0.005" rgba="0.3 0.3 0.3 0.6" contype="0" conaffinity="0"/>
+                
+                <!-- 机械臂连接 -->
+                <body name="Link_1" pos="0 -2.5e-05 -0.038">
+                    <inertial pos="-0.0016184 -7.0854E-06 -0.08892" 
+                             mass="0.08" 
+                             diaginertia="3e-5 2.5e-5 1.2e-5"/>
+                    <joint name="Joint_1" pos="0 0 0" axis="1 0 0" 
+                          range="-0.8 0.8" damping="0.05" frictionloss="0.1"/>
+                    <geom type="mesh" mesh="Link_1" rgba="1 0.95 0.9 1"/>
+                    
+                    <body name="Link_2" pos="0 0 -0.1308" quat="0 -1 0 0">
+                        <inertial pos="-0.00195 0 0.079412" 
+                                 mass="0.105" 
+                                 diaginertia="2e-5 2e-5 2e-5"/>
+                        <joint name="Joint_2" pos="0 0 0" axis="1 0 0" 
+                              range="-0.8 0.8" damping="0.05" frictionloss="0.1"/>
+                        <geom type="mesh" mesh="Link_2" rgba="1 1 1 1"/>
+                        
+                        <!-- 末端执行器标记 -->
+                        <site name="end_effector" pos="0 0 0.16" size="0.02" rgba="1 0 0 1"/>
+                    </body>
+                </body>
+            </body>
+            
+            <!-- 地面 -->
+            <geom name="ground" type="plane" size="10 10 0.1" rgba="0.3 0.3 0.3 1"/>
+            
+            <!-- 目标位置标记（可选） -->
+            <body name="target" pos="0.3 0 1.2" mocap="true">
+                <geom type="sphere" size="0.03" rgba="0 1 0 0.5" contype="0" conaffinity="0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    
