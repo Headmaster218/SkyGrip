@@ -3,6 +3,7 @@ from mujoco import viewer
 import numpy as np
 from dynamixel_sdk import *  # Dynamixel SDK
 import time
+import sys
 
 
 class RealRobotController:
@@ -261,8 +262,16 @@ def apply_real_state_to_sim(data, joint_qpos, joint_qvel):
     data.qvel[:len(joint_qvel)] = joint_qvel
     mujoco.mj_forward(model, data)  # 更新派生量
 
+if sys.platform.startswith("linux"):
+    device_path = "/dev/ttyUSB0"   # Ubuntu / Linux
+elif sys.platform == "darwin":
+    device_path = "/dev/tty.usbserial-FT9HDB5F"  # macOS
+else:
+    device_path = None  # 或 raise / 处理其他系统
+
+
 try:
-    real_controller = RealRobotController()
+    real_controller = RealRobotController( device_name=device_path )
 
 except Exception as e:
     print(f"❌ 初始化 RealRobotController 失败: {e}")
@@ -288,10 +297,10 @@ with viewer.launch_passive(model, data) as v:
         # 每 N 步反向力矩
         if step_counter % 100 == 0:
             torque_val = -torque_val
-            apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
+            # apply_real_state_to_sim(data, real_controller.get_joint_state()[0], real_controller.get_joint_state()[1])
 
         # 控制仿真 & 实物
-        sync_ctrl.send_torque(torque_val, enable_real=True, enable_sim=True)
+        sync_ctrl.send_torque(torque_val, enable_real=False, enable_sim=True)
 
         # 推进仿真一帧
         mujoco.mj_step(model, sync_ctrl.data)
