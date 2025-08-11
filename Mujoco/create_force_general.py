@@ -90,6 +90,11 @@ class DirectControlMPPIController:
         self.arm_test_frequency = 0.5  # 摆动频率（Hz）
         self.arm_test_phase = 0.0  # 相位差
         self.arm_reference = np.array([0.0, 0.0])  # 机械臂参考位置
+
+        # 机械臂电机参数
+        self.e_break = [0.235, 0.372]  # 电子制动系数
+        self.stall_torque = [3.0, 1.5]  # 每个关节的额定力矩（Nm）
+        self.full_speed = [77 * 2 * np.pi / 60 , 57 * 2 * np.pi / 60]  # 每个关节的最大速度（弧度/秒）
         
         # 控制限制
         self.thrust_limits = [0, 30]  # 总推力限制 [N]
@@ -604,7 +609,7 @@ class DirectControlMPPIController:
         u_optimal = self.u_init[0].copy()
         
         # 应用安全限制和补偿
-        self.apply_safety_limits(u_optimal, current_state)
+        # self.apply_safety_limits(u_optimal, current_state)
         
         # 平滑滤波（减少控制突变）
         alpha_filter = 0.6  # 降低滤波强度以提高响应
@@ -763,8 +768,10 @@ class DirectControlMPPIController:
             self.data.ctrl[1] = tau[1]
         else:
             # 使用MPPI计算的控制（也要限制）
-            self.data.ctrl[0] = np.clip(control[4], -1.5, 1.5)
-            self.data.ctrl[1] = np.clip(control[5], -1.5, 1.5)
+            self.data.ctrl[0] = control[4] - \
+                      (self.data.qvel[0] - (control[4] / self.stall_torque[0])* self.full_speed[0]) * self.e_break[0]
+            self.data.ctrl[1] = control[5] - \
+                      (self.data.qvel[1] - (control[5] / self.stall_torque[1])* self.full_speed[1]) * self.e_break[1]
     
     def run_simulation(self, duration: float = 30.0, visualize: bool = True):
         """运行仿真（修复版）"""
@@ -979,10 +986,9 @@ class DirectControlMPPIController:
 def main():
     # 创建模型
 
-    
     # 初始化MPPI控制器 - 大幅优化参数以提高速度
     params = MPPIParams(
-        horizon=15,              # 减少预测步数
+        horizon=5,              # 减少预测步数
         num_samples=200,         # 大幅减少采样数！从2000减到200
         lambda_=2.0,             # 增加温度参数
         w_pos=80.0,              # 位置权重
@@ -1034,9 +1040,9 @@ def main():
         # 设置机械臂测试（更保守的参数）
         controller.set_arm_test(
             mode="sine",           # 先用正弦波测试，更平滑
-            amplitude=0.3,         # 降低幅度（约17度）
-            frequency=0.2,         # 降低频率，更慢的运动
-            start_delay=3.0,       # 3秒后开始
+            amplitude=0.9,         # 降低幅度（约17度）
+            frequency=0.1,         # 降低频率，更慢的运动
+            start_delay=1.0,       # 3秒后开始
             phase_shift=np.pi/2    # 90度相位差
         )
         
