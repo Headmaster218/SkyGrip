@@ -129,7 +129,7 @@ class AdaptiveObjective(BaseObjective):
         self.w_joint_ctrl = 0.001 if self.step > 1 else 0.0
         
     def running_cost(self, state, inputs, reference):
-        """改进的运行成本（不依赖反馈增益）"""
+        """改进的运行成本函数"""
         # 解析状态
         pos = state[0:3]
         quat = state[3:7]
@@ -144,50 +144,52 @@ class AdaptiveObjective(BaseObjective):
         
         cost = 0.0
         
+        # 初始化变量（避免作用域问题）
+        ideal_base_pos = pos  # 默认值
+        ideal_joints = q_joints  # 默认值
+        
         # 根据任务类型选择目标
         if self.task_type == TaskType.END_EFFECTOR_TRAJECTORY:
-            # === 末端执行器轨迹跟踪模式 ===
-            # 解析参考（前3个元素是末端执行器目标位置）
+            # === 纯MPPI：只关注最终目标 ===
             ref_ee_pos = reference[0:3]
-            ref_quat = reference[3:7] if reference.shape[0] >= 7 else jnp.array([1, 0, 0, 0])
             
-            # 计算末端执行器位置
-            ee_pos = compute_end_effector_position(pos, quat_normalized, q_joints[0], q_joints[1])
+            # 计算实际末端位置
+            ee_pos = compute_end_effector_position(pos, quat_normalized, 
+                                                q_joints[0], q_joints[1])
             ee_error = ee_pos - ref_ee_pos
             ee_error_norm = jnp.linalg.norm(ee_error)
             
-            # 1. 末端位置误差（主要目标）
-            cost += self.w_pos * jnp.where(
-                ee_error_norm < 0.05,
-                200.0 * jnp.sum(ee_error**2),  # 接近目标时更敏感
-                jnp.sum(ee_error**2)
+            # ===== 简单直接的成本 =====
+            
+            # 1. 末端误差（主要目标）
+            ee_weight = jnp.where(
+                ee_error_norm < 0.1,
+                300.0,  # 接近时增加权重
+                150.0   # 正常权重
             )
+            cost += ee_weight * jnp.sum(ee_error**2)
             
-            # 2. 末端速度控制（简化版：通过基座速度近似）
-            k_p_ee = 2.5  # 提高增益
-            desired_vel = -k_p_ee * ee_error
-            desired_vel = jnp.clip(desired_vel, -0.5, 0.5)
-            vel_error = vel - desired_vel
-            cost += self.w_vel * jnp.sum(vel_error**2)
+            # 2. 速度惩罚（避免过快移动）
+            cost += 20.0 * jnp.sum(vel**2)
             
-            # 3. 积分效应（消除稳态误差）
-            static_error = ee_error_norm * jnp.exp(-5.0 * jnp.linalg.norm(vel))
-            cost += self.w_pos_integral * static_error**2
+            # 3. 角速度惩罚
+            cost += 10.0 * jnp.sum(omega**2)
             
-            # 4. 预测控制
-            dt_pred = 0.2
-            future_ee_pos = ee_pos + vel * dt_pred  # 简化预测
-            future_ee_error = future_ee_pos - ref_ee_pos
-            cost += self.w_prediction * jnp.sum(future_ee_error**2)
+            # 4. 关节速度惩罚
+            cost += 5.0 * jnp.sum(dq_joints**2)
             
-            # 5. 基座稳定性（避免剧烈运动）
-            base_vel_penalty = jnp.where(
-                jnp.linalg.norm(vel) > 0.5,
-                100.0 * jnp.sum(vel**2),
-                10.0 * jnp.sum(vel**2)
-            )
-            cost += 30.0 * base_vel_penalty  # 固定权重
-
+            # 5. 能量消耗
+            thrust_diff = inputs[0] - MASS_TOTAL * GRAVITY
+            cost += 0.01 * thrust_diff**2
+            cost += 0.01 * jnp.sum(inputs[1:4]**2)  # 扭矩
+            cost += 0.001 * jnp.sum(inputs[4:6]**2)  # 关节控制
+            
+            # 6. 稳态误差惩罚（鼓励收敛）
+            static_penalty = ee_error_norm * jnp.exp(-10.0 * jnp.linalg.norm(vel))
+            cost += 100.0 * static_penalty**2
+            
+            # 就这样！让MPPI自己找出如何移动基座和关节
+            
         else:
             # === 原有模式的位置控制 ===
             ref_pos = reference[0:3] if reference.shape[0] >= 3 else jnp.array([0, 0, 1.5])
@@ -240,12 +242,14 @@ class AdaptiveObjective(BaseObjective):
         omega_error = omega - desired_omega
         cost += self.w_omega * jnp.sum(omega_error**2)
         
-        # 控制成本
-        z_error = pos[2] - (reference[2] if self.task_type != TaskType.END_EFFECTOR_TRAJECTORY else 1.5)
+        # 推力控制
+        # 使用规划的基座高度作为目标
+        z_target = ideal_base_pos[2]
+        z_error = pos[2] - z_target
         z_vel = vel[2]
         
-        k_p_thrust = 2.0
-        k_d_thrust = 1.0
+        k_p_thrust = 2.5
+        k_d_thrust = 1.2
         thrust_adjustment = -k_p_thrust * z_error - k_d_thrust * z_vel
         
         # 考虑重心偏移（step2及以上）
@@ -256,7 +260,15 @@ class AdaptiveObjective(BaseObjective):
             gravity_compensation = self.nominal_hover_thrust
             
         expected_thrust = gravity_compensation + MASS_TOTAL * thrust_adjustment
-        expected_thrust = jnp.clip(expected_thrust, 9.0, 14.0)
+        
+        # 动态调整推力限制
+        if self.task_type == TaskType.END_EFFECTOR_TRAJECTORY:
+            # 根据目标高度调整推力范围
+            thrust_min = 8.0
+            thrust_max = jnp.minimum(18.0, 14.0 + (z_target - 1.5) * 2.0)
+            expected_thrust = jnp.clip(expected_thrust, thrust_min, thrust_max)
+        else:
+            expected_thrust = jnp.clip(expected_thrust, 9.0, 15.0)
         
         thrust_error = inputs[0] - expected_thrust
         cost += self.w_thrust * thrust_error**2
@@ -274,7 +286,7 @@ class AdaptiveObjective(BaseObjective):
             joint_vel_error = dq_joints - desired_joint_vel
             cost += self.w_joint_vel * jnp.sum(joint_vel_error**2)
         elif self.task_type == TaskType.END_EFFECTOR_TRAJECTORY:
-            # 末端执行器模式：惩罚过快的关节运动
+            # 惩罚过快的关节运动
             cost += self.w_joint_vel * jnp.sum(dq_joints**2)
         
         if inputs.shape[0] > 4:
@@ -302,11 +314,8 @@ class AdaptiveObjective(BaseObjective):
         )
         
         # 位置边界
-        pos_limit = 2.0
+        pos_limit = 5.0 if self.task_type == TaskType.END_EFFECTOR_TRAJECTORY else 2.0
         for i in range(3):
-            if self.task_type == TaskType.END_EFFECTOR_TRAJECTORY:
-                # 对末端执行器模式放宽基座位置限制
-                pos_limit = 3.0
             cost += jnp.where(
                 jnp.abs(pos[i]) > pos_limit,
                 5000.0 * (jnp.abs(pos[i]) - pos_limit)**2,
@@ -314,7 +323,7 @@ class AdaptiveObjective(BaseObjective):
             )
         
         # 关节限制
-        joint_limit = 1.6
+        joint_limit = 1.4  # 比物理极限1.6小
         cost += jnp.where(
             jnp.abs(q_joints[0]) > joint_limit,
             1000.0 * (jnp.abs(q_joints[0]) - joint_limit)**2,
@@ -1254,7 +1263,7 @@ if __name__ == "__main__":
             scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.3, -0.3])
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
-            ee_target = [0.1, 0, 5]  # 单个目标点
+            ee_target = [0.1, 0, 4]  # 单个目标点
             scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=15.0)
         elif args.test == 'trajectory':
             waypoints = [[0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]

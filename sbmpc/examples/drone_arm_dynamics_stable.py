@@ -324,20 +324,11 @@ dynamics_step3_stable = dynamics_step2  # 暂时使用步骤2
 @jax.jit
 def compute_end_effector_position(base_pos, base_quat, q1, q2):
     """
-    计算末端执行器在世界坐标系中的位置
-    
-    Args:
-        base_pos: 基座位置 [x, y, z]
-        base_quat: 基座姿态四元数 [w, x, y, z]
-        q1: Joint_1角度
-        q2: Joint_2角度
-    
-    Returns:
-        end_effector_pos: 末端执行器世界坐标 [x, y, z]
+    修正版：正确处理Link2的180度初始旋转
     """
     # 从XML获取的连接位置
     LINK1_OFFSET = jnp.array([0, -2.5e-05, -0.038])  # Link1相对base_link
-    LINK2_OFFSET = jnp.array([0, 0, -0.1308])         # Link2相对Link1
+    LINK2_OFFSET = jnp.array([0, 0, -0.1308])         # Link2相对Link1  
     END_EFFECTOR_OFFSET = jnp.array([0, 0, 0.16])     # 末端相对Link2
     
     # 基座旋转矩阵
@@ -351,28 +342,120 @@ def compute_end_effector_position(base_pos, base_quat, q1, q2):
         [0, s1, c1]
     ])
     
-    # Joint_2旋转矩阵（绕X轴，注意Link2有初始90度旋转）
+    # Joint_2旋转矩阵（绕X轴）
     c2, s2 = jnp.cos(q2), jnp.sin(q2)
-    R2_local = jnp.array([
+    R2 = jnp.array([
         [1, 0, 0],
         [0, c2, -s2],
         [0, s2, c2]
     ])
     
-    # Link2的初始旋转（从XML: quat="0 -1 0 0" 对应绕X轴旋转-90度）
+    # Link2的初始旋转（XML: quat="0 -1 0 0" = 绕X轴旋转180度）
     R2_init = jnp.array([
-        [1, 0, 0],
-        [0, 0, 1],
-        [0, -1, 0]
+        [1,  0,  0],
+        [0, -1,  0],    # 修正：这是180度旋转
+        [0,  0, -1]
     ])
     
-    # 级联变换
+    # 正确的级联变换
+    # 1. Link1在世界坐标系中的位置
     link1_pos_world = base_pos + R_base @ LINK1_OFFSET
-    link2_pos_world = link1_pos_world + R_base @ R1 @ LINK2_OFFSET
     
-    # 末端执行器在世界坐标系中的位置
-    R2_combined = R2_init @ R2_local
-    end_effector_local = R2_combined @ END_EFFECTOR_OFFSET
-    end_effector_world = link2_pos_world + R_base @ R1 @ end_effector_local
+    # 2. Link1旋转后的坐标系
+    R_world_link1 = R_base @ R1
+    
+    # 3. Link2在世界坐标系中的位置
+    link2_pos_world = link1_pos_world + R_world_link1 @ LINK2_OFFSET
+    
+    # 4. Link2的总旋转（包含初始180度旋转）
+    R_world_link2 = R_world_link1 @ R2_init @ R2
+    
+    # 5. 末端执行器在世界坐标系中的位置
+    end_effector_world = link2_pos_world + R_world_link2 @ END_EFFECTOR_OFFSET
     
     return end_effector_world
+
+# ============================================================================
+# 逆运动学规划（修正版）
+# ============================================================================
+@jax.jit
+def plan_base_and_joints_for_ee_target(target_ee_pos, current_state):
+    """
+    完全重新设计：考虑机械臂只能在YZ平面运动的事实
+    """
+    # 解析当前状态
+    current_pos = current_state[0:3]
+    current_joints = current_state[7:9]
+    
+    # 机械臂参数
+    LINK1_OFFSET_Z = -0.038    
+    LINK2_LENGTH = 0.1308       
+    EE_LENGTH = 0.16
+    ZERO_POSITION_OFFSET = -0.0088
+    
+    # ========== 关键认识：机械臂只能调整Y和Z！ ==========
+    
+    # === 步骤1：基座必须负责所有X方向移动 ===
+    ideal_base_x = target_ee_pos[0]  # 基座X必须等于目标X！
+    
+    # === 步骤2：基座Y位置（考虑机械臂可以提供Y偏移）===
+    # Joint1旋转可以产生Y方向偏移
+    # 但为了简化，让基座也负责大部分Y定位
+    ideal_base_y = target_ee_pos[1]  # 基座Y接近目标Y
+    
+    # === 步骤3：基座Z位置（与机械臂配合）===
+    # 机械臂在零位时末端略低于基座
+    # 选择一个让机械臂舒适工作的基座高度
+    ideal_base_z = target_ee_pos[2] - 0.02  # 基座略低于目标
+    
+    # 限制移动速度
+    max_base_velocity = 0.15
+    desired_base_change = jnp.array([
+        ideal_base_x - current_pos[0],
+        ideal_base_y - current_pos[1],
+        ideal_base_z - current_pos[2]
+    ])
+    
+    change_magnitude = jnp.linalg.norm(desired_base_change)
+    actual_change = jnp.where(
+        change_magnitude > max_base_velocity,
+        desired_base_change * (max_base_velocity / (change_magnitude + 1e-6)),
+        desired_base_change
+    )
+    
+    ideal_base_pos = current_pos + actual_change
+    
+    # ========== 步骤4：计算关节角度（只调整YZ）==========
+    
+    # 末端相对于理想基座的目标位置
+    ee_target_relative = target_ee_pos - ideal_base_pos
+    
+    # 注意：ee_target_relative[0] (X方向)应该接近0
+    # 因为基座已经负责了X定位
+    
+    dy = ee_target_relative[1]  # Y方向偏差
+    dz = ee_target_relative[2]  # Z方向偏差
+    
+    # === Joint1：调整Y-Z平面内的角度 ===
+    # Joint1旋转会同时影响Y和Z
+    # 正的q1会让末端向+Y方向移动，同时降低Z
+    
+    # 如果需要正的Y偏移，q1应该是正的
+    # 如果需要负的Y偏移，q1应该是负的
+    q1_ideal = jnp.arctan2(dy, 0.2) * 0.5  # 用Y偏差计算
+    
+    # === Joint2：主要调整Z高度 ===
+    # 考虑q1造成的高度变化
+    height_change_from_q1 = -LINK2_LENGTH * jnp.sin(q1_ideal)
+    
+    # 剩余需要补偿的高度
+    remaining_height = dz - height_change_from_q1
+    
+    # q2为负时末端向上（根据实验）
+    q2_ideal = -remaining_height * 4.0  # 增大增益
+    
+    # 限制范围
+    q1_ideal = jnp.clip(q1_ideal, -1.0, 1.0)
+    q2_ideal = jnp.clip(q2_ideal, -1.0, 1.0)
+    
+    return ideal_base_pos, jnp.array([q1_ideal, q2_ideal])
