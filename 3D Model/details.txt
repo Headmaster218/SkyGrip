@@ -27,7 +27,7 @@ column:
 9g
 
 arm motor1:
-XM430-W250-T
+XL430-W250-T
 57.2g
 1.0NM@9V, 1.4NM@11.1v, 1.5NM@12v
 
