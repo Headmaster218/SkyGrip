@@ -33,9 +33,9 @@ from drone_arm_dynamics_stable import (
 # 导入任务配置
 from task_configs import TaskConfig
 
-# GPU设置
-os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=True'
-jax.config.update("jax_default_matmul_precision", "high")
+# # GPU设置
+# os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=True'
+# jax.config.update("jax_default_matmul_precision", "high")
 
 
 # ============================================================================
@@ -48,6 +48,87 @@ class TaskType(Enum):
     TRAJECTORY = "trajectory"
     END_EFFECTOR_TRAJECTORY = "end_effector_trajectory"
 
+# ============================================================================
+# 设备选择和配置
+# ============================================================================
+def setup_compute_device():
+    """
+    自动检测并配置计算设备（GPU或CPU）
+    
+    Returns:
+        str: 使用的设备类型 ('gpu' 或 'cpu')
+    """
+    device_type = 'cpu'
+    
+    try:
+        # 检查可用的设备
+        devices = jax.devices()
+        
+        # 查找GPU设备
+        gpu_devices = [d for d in devices if d.platform == 'gpu']
+        
+        if gpu_devices:
+            # GPU可用
+            print("✓ GPU detected and available")
+            print(f"  Device: {gpu_devices[0]}")
+            
+            # 设置GPU优化选项
+            os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=True'
+            
+            # 确保使用第一个GPU
+            jax.config.update('jax_default_device', gpu_devices[0])
+            device_type = 'gpu'
+            
+            # 测试GPU是否真的可用
+            try:
+                test_array = jnp.ones((100, 100))
+                result = jnp.dot(test_array, test_array)
+                result.block_until_ready()
+                print("  GPU test successful")
+            except Exception as e:
+                print(f"  ⚠️ GPU test failed: {e}")
+                print("  Falling back to CPU")
+                device_type = 'cpu'
+        else:
+            print("ℹ️ No GPU detected, using CPU")
+            device_type = 'cpu'
+            
+    except Exception as e:
+        print(f"⚠️ Error detecting devices: {e}")
+        print("  Falling back to CPU")
+        device_type = 'cpu'
+    
+    # CPU配置
+    if device_type == 'cpu':
+        # CPU优化设置
+        cpu_devices = [d for d in jax.devices() if d.platform == 'cpu']
+        if cpu_devices:
+            jax.config.update('jax_default_device', cpu_devices[0])
+            print(f"  Using CPU: {cpu_devices[0]}")
+        
+        # CPU并行设置（根据核心数调整）
+        import multiprocessing
+        num_cores = multiprocessing.cpu_count()
+        print(f"  Available CPU cores: {num_cores}")
+        
+        # 设置CPU线程数（可以根据需要调整）
+        os.environ['XLA_FLAGS'] = f'--xla_cpu_multi_thread_eigen=true --xla_force_host_platform_device_count={min(num_cores, 8)}'
+    
+    # 通用优化设置
+    jax.config.update("jax_default_matmul_precision", "high")
+    
+    # 打印最终配置
+    print(f"\n{'='*50}")
+    print(f"Compute Configuration:")
+    print(f"  Device Type: {device_type.upper()}")
+    print(f"  JAX Version: {jax.__version__}")
+    print(f"  Default Backend: {jax.default_backend()}")
+    print(f"  Active Devices: {jax.devices()}")
+    print(f"{'='*50}\n")
+    
+    return device_type
+
+DEVICE_TYPE = setup_compute_device()
 
 # ============================================================================
 # 自适应目标函数
@@ -511,6 +592,21 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
     task_config = TaskConfig.get_config_for_task(
         scenario['task_type'].value, dynamics_step
     )
+
+    # 根据设备类型调整参数
+    if DEVICE_TYPE == 'cpu':
+        # CPU上可能需要减少采样数以保持性能
+        print("ℹ️ Adjusting parameters for CPU execution")
+        
+        # 降低采样数以提高CPU性能
+        original_samples = task_config['samples']
+        task_config['samples'] = min(original_samples, 3000)  # CPU上限制最大采样数
+        
+        if original_samples != task_config['samples']:
+            print(f"  Reduced samples from {original_samples} to {task_config['samples']}")
+        
+        # 可选：稍微增加噪声以补偿采样数减少
+        # task_config['noise'] = task_config['noise'] * 1.1
     
     config.MPC.dt = task_config['dt']
     config.MPC.horizon = task_config['horizon']
