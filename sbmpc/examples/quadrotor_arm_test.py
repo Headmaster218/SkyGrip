@@ -395,7 +395,7 @@ class AdaptiveObjective(BaseObjective):
         )
         
         # 位置边界
-        pos_limit = 5.0 if self.task_type == TaskType.END_EFFECTOR_TRAJECTORY else 2.0
+        pos_limit = 50.0 if self.task_type == TaskType.END_EFFECTOR_TRAJECTORY else 2.0
         for i in range(3):
             cost += jnp.where(
                 jnp.abs(pos[i]) > pos_limit,
@@ -1359,7 +1359,7 @@ if __name__ == "__main__":
             scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.3, -0.3])
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
-            ee_target = [0.1, 0, 4]  # 单个目标点
+            ee_target = [0.1, 0, 12]  # 单个目标点
             scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=15.0)
         elif args.test == 'trajectory':
             waypoints = [[0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
