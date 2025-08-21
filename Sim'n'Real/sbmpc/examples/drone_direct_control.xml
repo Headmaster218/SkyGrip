@@ -6,7 +6,7 @@
         <asset>
             <mesh name="base_link" file="base_link.STL"/>
             <mesh name="Link_1" file="Link_1.STL"/>
-            <mesh name="Link_2" file="Link_2.STL"/>
+            <mesh name="Link_2" file="Link_2_new.STL"/>
         </asset>
         
         <actuator>
@@ -46,7 +46,7 @@
                                  diaginertia="4e-5 4.16e-5 2.8e-5"/>
                         <joint name="Joint_2" pos="0 0 0" axis="1 0 0" 
                               range="-1.6 1.6" damping="0.235" frictionloss="0.203"/>
-                        <geom contype="0" conaffinity="0" type="mesh" mesh="Link_2" rgba="1 1 1 1"/>
+                        <geom contype="0" conaffinity="0" pos='-0.005 0.042 0' type="mesh" mesh="Link_2" rgba="1 1 1 1"/>
                         
                         <!-- 末端执行器标记 -->
                         <site name="end_effector" pos="0 0 0.16" size="0.02" rgba="1 0 0 1"/>
