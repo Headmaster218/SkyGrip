@@ -4,13 +4,13 @@ Drone:
 battery:
 386g
 
-drone2raspi:
+drone2raspi: 机械转接板
 15g
 
 raspi:
 79g
 
-drone2motor:
+drone2motor: 机械转接板
 10g
 
 base motor:

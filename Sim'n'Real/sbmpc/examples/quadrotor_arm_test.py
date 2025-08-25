@@ -1356,7 +1356,7 @@ if __name__ == "__main__":
         elif args.test == 'reach':
             scenario = TestScenario.reach_point_test([1.0, 0.5, 2.0])
         elif args.test == 'arm':
-            scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.3, -0.3])
+            scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [1.5, 0.3])
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
             ee_target = [0.1, 0, 12]  # 单个目标点
@@ -1371,3 +1371,6 @@ if __name__ == "__main__":
             plot_results(sim, scenario, None)
         
         print(f"\nTest completed with result: {results['success'].upper()}")
+
+
+        # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 2 --visualize
