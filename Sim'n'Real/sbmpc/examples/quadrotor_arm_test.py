@@ -151,6 +151,7 @@ class RealRobotController:
 
         self.e_break = [0.235, 0.372]  # 电子制动系数
         self.stall_torque = [3.0, 1.5]  # 每个关节的额定力矩（Nm）
+        self.torque_limit = [1.0, 1.0]  # 每个关节的力矩限制（Nm）
         self.full_speed = [77 * 2 * np.pi / 60 , 57 * 2 * np.pi / 60]  # 每个关节的最大速度（弧度/秒）
 
 
@@ -288,6 +289,10 @@ class RealRobotController:
         torque_vals: List[float]，与 dxl_ids 一一对应
         """
         assert len(torque_vals) == len(self.DXL_IDS), "力矩数量与舵机 ID 不一致"
+
+        #apply torque limits
+        for i in range(len(torque_vals)):
+            torque_vals[i] = np.clip(torque_vals[i], -self.torque_limit[i], self.torque_limit[i])
 
         pwm_vals = []
         for idx, tau in enumerate(torque_vals):
@@ -635,7 +640,7 @@ class AdaptiveObjective(BaseObjective):
             )
         
         # 关节限制
-        joint_limit = 1.4  # 比物理极限1.6小
+        joint_limit = 1.3  # 比物理极限1.6小
         cost += jnp.where(
             jnp.abs(q_joints[0]) > joint_limit,
             1000.0 * (jnp.abs(q_joints[0]) - joint_limit)**2,
@@ -786,8 +791,8 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
     robot_config.nu = 6
     
     # 控制限制（通用范围）
-    robot_config.input_min = jnp.array([0., -1.0, -1.0, -1.0, -0.5, -0.5])
-    robot_config.input_max = jnp.array([20., 1.0, 1.0, 1.0, 0.5, 0.5])
+    robot_config.input_min = jnp.array([0., -1.0, -1.0, -1.0, -1.5, -1.5])
+    robot_config.input_max = jnp.array([20., 1.0, 1.0, 1.0, 1.5, 1.5])
     
     # 初始状态（末端执行器模式使用非零关节角度）
     if scenario['task_type'] == TaskType.END_EFFECTOR_TRAJECTORY:
@@ -985,9 +990,17 @@ def run_with_visualization(sim, config, scenario):
         for i in range(config.sim_iterations):
             # SBMPC步进
             sim.step()
+
+            ctrl = sim.input_traj[i, :]
             
             # 获取当前状态
             current_state = sim.state_traj[i+1, :]
+
+            arm_torques = ctrl[4:6]
+
+            # 发送控制到真实机器人
+            if use_real is True:
+                real_controller.send_torque(arm_torques)
             
             # 检查NaN
             if jnp.any(jnp.isnan(current_state)):
@@ -996,6 +1009,8 @@ def run_with_visualization(sim, config, scenario):
 
             if use_real is True:
                 real_state = real_controller.get_joint_state()
+                q_arm  = jnp.asarray(real_state[0], dtype=jnp.float32)  # 形状 (2,)
+                dq_arm = jnp.asarray(real_state[1], dtype=jnp.float32)  # 形状 (2,)
             
             # 更新MuJoCo
             mj_data.qpos[0:3] = current_state[0:3]
@@ -1006,6 +1021,7 @@ def run_with_visualization(sim, config, scenario):
                 else:
                     mj_data.qpos[7:9] = real_state[0]
                     sim.state_traj[i+1, :][7:9] = real_state[0]
+                    sim.current_state.at[7:9].set(q_arm)
             
             mj_data.qvel[0:3] = current_state[9:12]
             mj_data.qvel[3:6] = current_state[12:15]
@@ -1015,6 +1031,7 @@ def run_with_visualization(sim, config, scenario):
                 else:
                     mj_data.qvel[6:8] = real_state[1]
                     sim.state_traj[i+1, :][15:17] = real_state[1]
+                    sim.current_state.at[15:17].set(dq_arm)
             
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
@@ -1034,7 +1051,7 @@ def run_with_visualization(sim, config, scenario):
                 
                 last_print_time = current_time
             
-            time.sleep(config.MPC.dt)
+            # time.sleep(config.MPC.dt)
             
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
@@ -1603,7 +1620,7 @@ if __name__ == "__main__":
             scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [1.5, 0.3])
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
-            ee_target = [0.1, 0, 12]  # 单个目标点
+            ee_target = [0.1, 0, 6]  # 单个目标点
             scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=15.0)
         elif args.test == 'trajectory':
             waypoints = [[0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
