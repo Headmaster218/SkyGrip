@@ -5,6 +5,7 @@
 """
 
 import os
+import sys
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,6 +15,8 @@ import time
 from enum import Enum
 import matplotlib.pyplot as plt
 from typing import Dict, Tuple, Optional
+from dynamixel_sdk import *  # Dynamixel SDK
+
 
 from sbmpc import BaseObjective
 import sbmpc.settings as settings
@@ -128,7 +131,235 @@ def setup_compute_device():
     
     return device_type
 
+
+class RealRobotController:
+    def __init__(self, device_name="/dev/ttyUSB0", baudrate=115200, dxl_ids=[0, 1]):
+        self.DEVICENAME = device_name
+        self.BAUDRATE = baudrate
+        self.DXL_IDS = dxl_ids
+
+        self.PROTOCOL_VERSION = 2.0
+        self.ADDR_TORQUE_ENABLE = 64
+        self.ADDR_GOAL_POSITION = 116  # 4 bytes
+        self.LEN_GOAL_POSITION = 4
+        self.ADDR_PRESENT_POSITION = 132  # 4 bytes
+        # self.TORQUE_ENABLE = 1
+
+        self.angle_offset = [-115,180]
+        self.max_torque_per_joint = [4.5, 1]
+        self.max_pwm_val = 855
+
+        self.e_break = [0.235, 0.372]  # 电子制动系数
+        self.stall_torque = [3.0, 1.5]  # 每个关节的额定力矩（Nm）
+        self.full_speed = [77 * 2 * np.pi / 60 , 57 * 2 * np.pi / 60]  # 每个关节的最大速度（弧度/秒）
+
+
+        # 初始化串口和协议处理器
+        self.portHandler = PortHandler(self.DEVICENAME)
+        self.packetHandler = PacketHandler(self.PROTOCOL_VERSION)
+
+        # 打开串口
+        if not self.portHandler.openPort():
+            raise RuntimeError("❌ 串口打开失败")
+        if not self.portHandler.setBaudRate(self.BAUDRATE):
+            raise RuntimeError("❌ 设置波特率失败")
+
+        # 初始化同步写对象
+        self.groupSyncWrite = GroupSyncWrite(
+            self.portHandler, self.packetHandler, self.ADDR_GOAL_POSITION, self.LEN_GOAL_POSITION
+        )
+        # 当前模式缓存（ID → mode），mode：0=PWM, 1=Current, 3=Position 等
+        self.current_mode_map = {dxl_id: None for dxl_id in self.DXL_IDS}
+
+
+    def _set_control_mode_if_needed(self, dxl_id, target_mode):
+        """
+        如果当前模式不是目标模式，则切换舵机控制模式
+        target_mode: int，0=PWM, 3=Position 等
+        """
+        MODE_ADDR = 11  # Control Mode
+        if self.current_mode_map[dxl_id] != target_mode:
+            # 切换模式流程：关闭力矩 → 修改模式 → 启用力矩
+            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 0)
+            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, MODE_ADDR, target_mode)
+            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 1)
+            self.current_mode_map[dxl_id] = target_mode
+
+    def get_joint_positions(self):
+        """
+        返回当前舵机位置（单位：弧度），长度与 self.DXL_IDS 一致
+        """
+        current_positions = []
+        for dxl_id in self.DXL_IDS:
+            pos_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
+                self.portHandler, dxl_id, self.ADDR_PRESENT_POSITION)
+            if dxl_comm_result != COMM_SUCCESS:
+                print(f"[ID {dxl_id}] 读取失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
+                continue
+            elif dxl_error != 0:
+                print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
+                continue
+
+            # Dynamixel 位置值是 0~4095，映射到 0~360°
+            degree = (pos_result / 4095.0) * 360.0
+            rad = np.radians(degree)  # 转换为弧度
+            current_positions.append(rad)
+
+        return current_positions
+
+    def degree_to_position(self, degree):
+        degree = degree % 360
+        return int((degree / 360.0) * 4095)
+    
+    def send_joint_positions(self, degrees, check_response=False):
+        """
+        发送目标角度（单位：度）给舵机，自动切换至 Position 控制模式
+        degrees: List[float]，每个关节的目标角度（0~360 度）
+        """
+        assert hasattr(self, "DXL_IDS"), "DXL_IDS 尚未初始化"
+        assert len(degrees) == len(self.DXL_IDS), "角度与舵机ID数量不一致"
+
+        ADDR_GOAL_POSITION = self.ADDR_GOAL_POSITION
+        LEN_GOAL_POSITION = self.LEN_GOAL_POSITION
+        POSITION_MODE = 3
+
+        groupSyncWrite = GroupSyncWrite(self.portHandler, self.packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION)
+        groupSyncWrite.clearParam()
+
+        for dxl_id, degree in zip(self.DXL_IDS, degrees):
+            # 设置模式（如果需要）
+            self._set_control_mode_if_needed(dxl_id, POSITION_MODE)
+
+            pos_val = self.degree_to_position(degree)
+            param_goal_pos = [
+                pos_val & 0xFF,
+                (pos_val >> 8) & 0xFF,
+                (pos_val >> 16) & 0xFF,
+                (pos_val >> 24) & 0xFF
+            ]
+            success = groupSyncWrite.addParam(dxl_id, param_goal_pos)
+            if not success and check_response:
+                print(f"[ID {dxl_id}] ❌ 添加同步参数失败")
+
+        result = groupSyncWrite.txPacket()
+
+        if check_response:
+            if result != COMM_SUCCESS:
+                print("❌ 同步写入失败:", self.packetHandler.getTxRxResult(result))
+            else:
+                print("✅ 同步写入成功")
+
+    def send_pwm(self, pwm_vals, check_response=False):
+        """
+        发送 PWM 控制信号到多个舵机
+        pwm_vals: List[int]，单位为 [-885, 885]，与 self.DXL_IDS 一一对应
+        自动切换至 PWM 控制模式
+        """
+        assert len(pwm_vals) == len(self.DXL_IDS), "PWM 数量必须与舵机 ID 数量一致"
+
+        ADDR_GOAL_PWM = 100
+        LEN_PWM = 2
+        PWM_MODE = 16  # 0 = PWM 控制模式
+
+        groupSyncWrite = GroupSyncWrite(self.portHandler, self.packetHandler, ADDR_GOAL_PWM, LEN_PWM)
+        groupSyncWrite.clearParam()
+
+        for dxl_id, pwm in zip(self.DXL_IDS, pwm_vals):
+            # 自动检查并设置控制模式为 PWM
+            self._set_control_mode_if_needed(dxl_id, PWM_MODE)
+
+            pwm = int(np.clip(pwm, -885, 885))
+            param_goal_pwm = [pwm & 0xFF, (pwm >> 8) & 0xFF]
+            success = groupSyncWrite.addParam(dxl_id, param_goal_pwm)
+            if not success and check_response:
+                print(f"[ID {dxl_id}] ❌ 添加 PWM 参数失败")
+
+        result = groupSyncWrite.txPacket()
+
+        if check_response:
+            if result != COMM_SUCCESS:
+                print("❌ PWM 同步写入失败:", self.packetHandler.getTxRxResult(result))
+            else:
+                print("✅ PWM 同步写入成功")
+
+    def send_torque(self, torque_vals, check_response=False):
+        """
+        输入力矩（单位 Nm），自动转换为 PWM 并发送给舵机
+        torque_vals: List[float]，与 dxl_ids 一一对应
+        """
+        assert len(torque_vals) == len(self.DXL_IDS), "力矩数量与舵机 ID 不一致"
+
+        pwm_vals = []
+        for idx, tau in enumerate(torque_vals):
+            max_tau = self.max_torque_per_joint[idx]
+            pwm = (tau / max_tau) * self.max_pwm_val
+            pwm_vals.append(int(np.clip(pwm, -self.max_pwm_val, self.max_pwm_val)))
+
+        self.send_pwm(pwm_vals, check_response=check_response)
+
+    def close(self):
+        self.portHandler.closePort()
+
+    def get_joint_state(self):
+
+        """
+        获取当前所有关节的角度（弧度）和速度（弧度/秒），用于仿真同步
+        返回：
+            qpos: List[float] 角度（rad）
+            qvel: List[float] 速度（rad/s）—— 若舵机不支持读取速度，则为零向量
+        """
+        qpos = []
+        qvel = []
+
+        for i, dxl_id in enumerate(self.DXL_IDS):
+            # --- 读取角度 ---
+            pos_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
+                self.portHandler, dxl_id, self.ADDR_PRESENT_POSITION
+            )
+            if dxl_comm_result != COMM_SUCCESS:
+                print(f"[ID {dxl_id}] 读取角度失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
+                qpos.append(0.0)
+            elif dxl_error != 0:
+                print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
+                qpos.append(0.0)
+            else:
+                degree = (pos_result / 4095.0) * 360.0 + self.angle_offset[i]
+                qpos.append(np.radians(degree))
+
+            # --- 读取速度（若支持） ---
+            # Dynamixel XL-320 / X 系列一般使用地址 128
+            vel_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
+                self.portHandler, dxl_id, 128  # PRESENT_VELOCITY
+            )
+            if dxl_comm_result != COMM_SUCCESS or dxl_error != 0:
+                qvel.append(0.0)
+            else:
+                # Dynamixel 的速度单位是：0 ~ 1023 对应 0 ~ 最大转速（通常为 ~117 RPM）
+                # 这里假设最大值对应 117 RPM = 12.25 rad/s，映射线性计算
+                rpm = (vel_result / 1023.0) * 117.0
+                rad_per_sec = rpm * 2 * np.pi / 60
+                qvel.append(rad_per_sec)
+
+        return qpos, qvel
+
+
 DEVICE_TYPE = setup_compute_device()
+
+if sys.platform.startswith("linux"):
+    device_path = "/dev/ttyUSB0"   # Ubuntu / Linux
+elif sys.platform == "darwin":
+    device_path = "/dev/tty.usbserial-FT9HDB5F"  # macOS
+elif sys.platform == "win32":
+    device_path = "COM7"  # Windows
+else:
+    raise RuntimeError(f"❌ 不支持的操作系统: {sys.platform}")
+
+try:
+    real_controller = RealRobotController( device_name=device_path )
+
+except Exception as e:
+    print(f"❌ 初始化 RealRobotController 失败: {e}")
+    real_controller = None
 
 # ============================================================================
 # 自适应目标函数
@@ -727,6 +958,8 @@ def run_test_with_diagnostics(scenario: Dict, dynamics_step: int = 1, visualize:
 def run_with_visualization(sim, config, scenario):
     """带MuJoCo可视化运行"""
     print("\nRunning with MuJoCo visualization...")
+    use_real = real_controller is not None
+    print(f"Using real robot controller: {use_real}")
     
     mj_model = mujoco.MjModel.from_xml_path("examples/drone_direct_control.xml")
     mj_data = mujoco.MjData(mj_model)
@@ -760,17 +993,28 @@ def run_with_visualization(sim, config, scenario):
             if jnp.any(jnp.isnan(current_state)):
                 print(f"\n⚠️ NaN detected at step {i}!")
                 break
+
+            if use_real is True:
+                real_state = real_controller.get_joint_state()
             
             # 更新MuJoCo
             mj_data.qpos[0:3] = current_state[0:3]
             mj_data.qpos[3:7] = current_state[3:7]
             if mj_model.nq > 7:
-                mj_data.qpos[7:9] = current_state[7:9]
+                if use_real is False:
+                    mj_data.qpos[7:9] = current_state[7:9]
+                else:
+                    mj_data.qpos[7:9] = real_state[0]
+                    sim.state_traj[i+1, :][7:9] = real_state[0]
             
             mj_data.qvel[0:3] = current_state[9:12]
             mj_data.qvel[3:6] = current_state[12:15]
             if mj_model.nv > 6:
-                mj_data.qvel[6:8] = current_state[15:17]
+                if use_real is False:
+                    mj_data.qvel[6:8] = current_state[15:17]
+                else:
+                    mj_data.qvel[6:8] = real_state[1]
+                    sim.state_traj[i+1, :][15:17] = real_state[1]
             
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
