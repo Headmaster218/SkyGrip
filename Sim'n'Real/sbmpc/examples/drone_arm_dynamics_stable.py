@@ -318,8 +318,139 @@ def dynamics_step2(state, inputs, params):
     
     return state_dot
 
-# 步骤3保持占位
-dynamics_step3_stable = dynamics_step2  # 暂时使用步骤2
+@jax.jit
+def dynamics_step3(state, inputs, params):
+    """
+    步骤2：添加重心补偿（修正版） + 电机 e_break（关节）
+    - e_break 仅作用在关节电机（tau1, tau2），用你给的公式实现
+    - stall_torque_joints: 形状 (2,)  [N·m]
+    - full_speed_joints:   形状 (2,)  [rad/s]  (空载角速度)
+    - e_break_joints:      形状 (2,)  [N·m·s/rad]  (等效阻尼系数)
+    """
+
+    # ---------- 解析状态 ----------
+    pos   = state[0:3]
+    quat  = state[3:7]
+    q1, q2 = state[7], state[8]
+    vel   = state[9:12]
+    omega = state[12:15]
+    dq1, dq2 = state[15], state[16]
+
+    # 四元数归一化
+    quat = quat / (jnp.linalg.norm(quat) + 1e-10)
+
+    # ---------- 输入限制 ----------
+    thrust  = jnp.clip(inputs[0],    5.0, 20.0)
+    torques = jnp.clip(inputs[1:4], -1.0,  1.0)
+    tau1    = jnp.clip(inputs[4],   -0.5,  0.5)
+    tau2    = jnp.clip(inputs[5],   -0.5,  0.5)
+
+    # ========== 关节电机 e_break 修正（用你的公式） ==========
+    # tau_eff = tau_cmd - (dq - (tau_cmd/stall)*full_speed) * e_break
+    # 注意单位：stall[N·m], full_speed[rad/s], e_break[N·m·s/rad]
+    stall = jnp.array([3.0, 1.5], dtype=jnp.float32)
+    fspd  = jnp.array([77 * 2 * jnp.pi / 60 , 57 * 2 * jnp.pi / 60], dtype=jnp.float32)
+    ebrk  = jnp.array([0.235, 0.372], dtype=jnp.float32)
+
+    tau_cmd = jnp.array([tau1, tau2], dtype=jnp.float32)
+    dq      = jnp.array([dq1,  dq2],  dtype=jnp.float32)
+
+    no_load_speed = (tau_cmd / (stall + 1e-8)) * fspd
+    tau_eff = tau_cmd - (dq - no_load_speed) * ebrk
+    # 物理限幅（避免超出堵转力矩）
+    tau_eff = jnp.clip(tau_eff, -stall, stall)
+
+    tau1_eff, tau2_eff = tau_eff[0], tau_eff[1]
+
+    # ========== 计算重心偏移（与你原版一致） ==========
+    joint_threshold = 0.01
+    q_joints = jnp.array([q1, q2])
+    joint_magnitude = jnp.linalg.norm(q_joints)
+
+    com_offset = jnp.where(
+        joint_magnitude > joint_threshold,
+        compute_com_offset(q1, q2),
+        jnp.zeros(3)
+    )
+
+    # ========== 平动动力学（与你原版一致） ==========
+    R = quat2rotm(quat)
+
+    thrust_body  = jnp.array([0., 0., thrust])
+    thrust_world = R @ thrust_body
+
+    offset_torque = jnp.cross(com_offset, thrust_body) * 0.1
+
+    gravity_force = jnp.array([0., 0., -MASS_TOTAL * GRAVITY])
+    linear_damping_coeff = 0.5
+    drag_force = -linear_damping_coeff * vel
+
+    acc = (thrust_world + gravity_force + drag_force) / MASS_TOTAL
+    acc = jnp.clip(acc, -20.0, 20.0)
+
+    # ========== 转动动力学（与你原版一致） ==========
+    gyro_torque = jnp.cross(omega, INERTIA_BASE * omega)
+    angular_damping_coeff = 2.0
+    damping_torque = -angular_damping_coeff * omega
+
+    joint_vel_magnitude = jnp.sqrt(dq1**2 + dq2**2)
+    joint_vel_threshold = 0.01
+
+    arm_coupling = jnp.where(
+        joint_vel_magnitude > joint_vel_threshold,
+        jnp.array([
+            dq1 * 0.002 + dq1 * dq2 * 0.001,
+            dq2 * 0.002 + dq1 * dq2 * 0.001,
+            (dq1**2 + dq2**2) * 0.001
+        ]),
+        jnp.zeros(3)
+    )
+
+    total_torque = torques - gyro_torque + damping_torque - offset_torque - arm_coupling
+    alpha = INERTIA_BASE_INV * total_torque
+    alpha = jnp.clip(alpha, -15.0, 15.0)
+
+    # ========== 关节动力学（把 tau_eff 代入） ==========
+    g_tau1 = jnp.where(
+        jnp.abs(q1) > joint_threshold,
+        -(MASS_LINK1 * 0.089 + MASS_LINK2 * 0.22) * GRAVITY * jnp.sin(q1),
+        0.0
+    )
+    g_tau2 = jnp.where(
+        jnp.abs(q1 + q2) > joint_threshold,
+        -MASS_LINK2 * 0.079 * GRAVITY * jnp.sin(q1 + q2),
+        0.0
+    )
+
+    joint_inertia = jnp.array([0.008, 0.005])
+
+    ddq1 = (tau1_eff + g_tau1 - JOINT_DAMPING[0]*dq1 - JOINT_FRICTION[0]*jnp.tanh(10*dq1)) / joint_inertia[0]
+    ddq2 = (tau2_eff + g_tau2 - JOINT_DAMPING[1]*dq2 - JOINT_FRICTION[1]*jnp.tanh(10*dq2)) / joint_inertia[1]
+
+    ddq_joints = jnp.array([ddq1, ddq2])
+    ddq_joints = jnp.clip(ddq_joints, -5.0, 5.0)
+
+    # ========== 姿态四元数导数 ==========
+    omega_quat = jnp.array([0., omega[0], omega[1], omega[2]])
+    quat_dot = 0.5 * quat_product(quat, omega_quat)
+
+    # ========== 组合 ==========
+    state_dot = jnp.concatenate([
+        vel, quat_dot,
+        jnp.array([dq1, dq2]),
+        acc, alpha, ddq_joints
+    ])
+
+    state_dot = jnp.nan_to_num(state_dot, nan=0.0, posinf=0.0, neginf=0.0)
+
+    state_dot_mag = jnp.linalg.norm(state_dot)
+    state_dot = jnp.where(
+        state_dot_mag > 50.0,
+        state_dot * (50.0 / state_dot_mag),
+        state_dot
+    )
+    return state_dot
+
 
 @jax.jit
 def compute_end_effector_position(base_pos, base_quat, q1, q2):

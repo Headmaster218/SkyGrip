@@ -27,7 +27,7 @@ from sbmpc.geometry import quat_product, quat2rotm, quat_inverse
 from drone_arm_dynamics_stable import (
     dynamics_step1,
     dynamics_step2,
-    dynamics_step3_stable,
+    dynamics_step3,
     MASS_TOTAL, GRAVITY,
     compute_com_offset,
     compute_end_effector_position
@@ -913,7 +913,7 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
         dynamics_fn = dynamics_step2
     else:
         print("\nUsing Step 3: Full coupled dynamics (stabilized)")
-        dynamics_fn = dynamics_step3_stable
+        dynamics_fn = dynamics_step3
     
     # 8. 构建仿真
     print("\nBuilding simulation...")
