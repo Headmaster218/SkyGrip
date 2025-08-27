@@ -226,12 +226,12 @@ class Simulation(Simulator):
 
     def update(self):
         # Compute the optimal input sequence
-        time_start = time.time_ns()
-        print("iteration: ", self.iter)
-        print("current state: ", self.current_state_vec())
+        # time_start = time.time_ns()
+        # print("iteration: ", self.iter)
+        # print("current state: ", self.current_state_vec())
         input_sequence = self.controller.command(self.current_state_vec(), self.const_reference, num_steps=1).block_until_ready()
         ctrl = input_sequence[0, :].block_until_ready()
-        print("computation time: {:.3f} [ms]".format(1e-6 * (time.time_ns() - time_start)))
+        # print("computation time: {:.3f} [ms]".format(1e-6 * (time.time_ns() - time_start)))
 
         self.input_traj[self.iter, :] = ctrl
 

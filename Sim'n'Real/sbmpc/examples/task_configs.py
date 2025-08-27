@@ -142,20 +142,11 @@ class TaskConfig:
                     0.0
                 ])
             }
-        else:  # step 2 或 3
-            # return {
-            #     'dt': 0.02,
-            #     'horizon': 40,      
-            #     'samples': 3000,    
-            #     'lambda': 0.6,      
-            #     'noise': jnp.array([
-            #         1.9, 0.9, 0.6, 0.4, 1.2, 1.0
-            #     ])
-            # }
+        else:  
             return {
-                'dt': 0.02,
-                'horizon': 40,      
-                'samples': 3000,    
+                'dt': 0.04,
+                'horizon': 30,      
+                'samples': 1200,    
                 'lambda': 0.7,      
                 'noise': jnp.array([
                     1.6,    # 减少推力噪声

@@ -133,7 +133,7 @@ def setup_compute_device():
 
 
 class RealRobotController:
-    def __init__(self, device_name="/dev/ttyUSB0", baudrate=115200, dxl_ids=[0, 1]):
+    def __init__(self, device_name="/dev/ttyUSB0", baudrate=1000000, dxl_ids=[1, 2]):
         self.DEVICENAME = device_name
         self.BAUDRATE = baudrate
         self.DXL_IDS = dxl_ids
@@ -142,7 +142,9 @@ class RealRobotController:
         self.ADDR_TORQUE_ENABLE = 64
         self.ADDR_GOAL_POSITION = 116  # 4 bytes
         self.LEN_GOAL_POSITION = 4
-        self.ADDR_PRESENT_POSITION = 132  # 4 bytes
+        self.ADDR_PRESENT_POSITION = 132  # X 系列 Present Position
+        self.ADDR_PRESENT_VELOCITY = 128  # X 系列 Present Velocity
+        self.LEN_4 = 4
         # self.TORQUE_ENABLE = 1
 
         self.angle_offset = [-115,180]
@@ -169,8 +171,19 @@ class RealRobotController:
         self.groupSyncWrite = GroupSyncWrite(
             self.portHandler, self.packetHandler, self.ADDR_GOAL_POSITION, self.LEN_GOAL_POSITION
         )
+
+        # 初始化 GroupSyncRead
+        self.groupSyncRead = GroupSyncRead(
+            self.portHandler, self.packetHandler,
+            self.ADDR_PRESENT_VELOCITY, 8
+        )
+        for dxl_id in self.DXL_IDS:
+            if not self.groupSyncRead.addParam(dxl_id):
+                raise RuntimeError(f"GroupSyncRead addParam failed: ID={dxl_id}")
+
         # 当前模式缓存（ID → mode），mode：0=PWM, 1=Current, 3=Position 等
         self.current_mode_map = {dxl_id: None for dxl_id in self.DXL_IDS}
+        self.pwmgroupWrite = GroupSyncWrite(self.portHandler, self.packetHandler, 100, 2)
 
 
     def _set_control_mode_if_needed(self, dxl_id, target_mode):
@@ -262,7 +275,7 @@ class RealRobotController:
         LEN_PWM = 2
         PWM_MODE = 16  # 0 = PWM 控制模式
 
-        groupSyncWrite = GroupSyncWrite(self.portHandler, self.packetHandler, ADDR_GOAL_PWM, LEN_PWM)
+        groupSyncWrite = self.pwmgroupWrite
         groupSyncWrite.clearParam()
 
         for dxl_id, pwm in zip(self.DXL_IDS, pwm_vals):
@@ -306,47 +319,36 @@ class RealRobotController:
         self.portHandler.closePort()
 
     def get_joint_state(self):
+        # 一次性请求
+        dxl_comm_result = self.groupSyncRead.txRxPacket()
+        if dxl_comm_result != COMM_SUCCESS:
+            print("SyncRead failed:", self.packetHandler.getTxRxResult(dxl_comm_result))
+            return [0.0]*len(self.DXL_IDS), [0.0]*len(self.DXL_IDS)
 
-        """
-        获取当前所有关节的角度（弧度）和速度（弧度/秒），用于仿真同步
-        返回：
-            qpos: List[float] 角度（rad）
-            qvel: List[float] 速度（rad/s）—— 若舵机不支持读取速度，则为零向量
-        """
-        qpos = []
-        qvel = []
+        qpos, qvel = [], []
 
         for i, dxl_id in enumerate(self.DXL_IDS):
-            # --- 读取角度 ---
-            pos_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
-                self.portHandler, dxl_id, self.ADDR_PRESENT_POSITION
-            )
-            if dxl_comm_result != COMM_SUCCESS:
-                print(f"[ID {dxl_id}] 读取角度失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
+            if not self.groupSyncRead.isAvailable(dxl_id, self.ADDR_PRESENT_VELOCITY, 8):
                 qpos.append(0.0)
-            elif dxl_error != 0:
-                print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
-                qpos.append(0.0)
-            else:
-                degree = (pos_result / 4095.0) * 360.0 + self.angle_offset[i]
-                qpos.append(np.radians(degree))
-
-            # --- 读取速度（若支持） ---
-            # Dynamixel XL-320 / X 系列一般使用地址 128
-            vel_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
-                self.portHandler, dxl_id, 128  # PRESENT_VELOCITY
-            )
-            if dxl_comm_result != COMM_SUCCESS or dxl_error != 0:
                 qvel.append(0.0)
-            else:
-                # Dynamixel 的速度单位是：0 ~ 1023 对应 0 ~ 最大转速（通常为 ~117 RPM）
-                # 这里假设最大值对应 117 RPM = 12.25 rad/s，映射线性计算
-                rpm = (vel_result / 1023.0) * 117.0
-                rad_per_sec = rpm * 2 * np.pi / 60
-                qvel.append(rad_per_sec)
+                continue
+
+            vel_bytes = self.groupSyncRead.getData(dxl_id, 128, 4).to_bytes(4,'little',signed=False)
+            pos_bytes = self.groupSyncRead.getData(dxl_id, 132, 4).to_bytes(4,'little',signed=False)
+            vel_val = int.from_bytes(vel_bytes,'little',signed=True)
+            pos_val = int.from_bytes(pos_bytes,'little',signed=False)
+
+
+            # 速度：带符号，单位 0.229 rpm/bit
+            rpm = (vel_val / 1023.0) * 117.0
+            rad_per_sec = rpm * 2 * np.pi / 60
+            qvel.append(rad_per_sec)
+
+            # 位置：无符号，0~4095 → 0~360deg
+            degree = (pos_val / 4095.0) * 360.0 + self.angle_offset[i]
+            qpos.append(np.radians(degree))
 
         return qpos, qvel
-
 
 DEVICE_TYPE = setup_compute_device()
 
@@ -474,7 +476,7 @@ class AdaptiveObjective(BaseObjective):
 
             # 1) 末端误差（远处中等，近处加大）——不归一化
             ee_weight = jnp.where(ee_err_norm < 0.12, 320.0, 180.0)  # 12cm 内强化
-            cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 0.5, ee_error**2, drone_err_norm**2))
+            cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_error**2, drone_err_norm**2))
 
             # 2) 平动速度（抑制飘）
             cost += 8.0 * jnp.sum(vel**2)
@@ -517,8 +519,6 @@ class AdaptiveObjective(BaseObjective):
         cost = jnp.where(jnp.isnan(cost), 1e6, cost)
         cost = jnp.where(jnp.isinf(cost), 1e6, cost)
         return jnp.clip(cost, 0.0, 1e6)
-
-
 
     def final_cost(self, state, reference):
         """终端成本"""
@@ -846,11 +846,15 @@ def run_with_visualization(sim, config, scenario):
         mj_data.mocap_pos[0] = target_ee_pos
     
     try:
-        last_print_time = 0
+        start_time = time.time() +0.5
         
         for i in range(config.sim_iterations):
+
+            sim_start = time.time()
             # SBMPC步进
             sim.step()
+            sim_end = time.time()
+            print(f"Sim step time: {(sim_end - sim_start)*1000:.2f} ms")
 
             ctrl = sim.input_traj[i, :]
             
@@ -861,15 +865,22 @@ def run_with_visualization(sim, config, scenario):
 
             # 发送控制到真实机器人
             if use_real is True:
-                real_controller.send_torque(arm_torques)
+                send_torque_start = time.time()
+                real_controller.send_torque(arm_torques) #0.25ms
+                send_torque_end = time.time()
+                print(f"Send torque time: {(send_torque_end - send_torque_start)*1000:.2f} ms")
             
             # 检查NaN
             if jnp.any(jnp.isnan(current_state)):
                 print(f"\n⚠️ NaN detected at step {i}!")
                 break
 
+            # 获取真实机器人状态
             if use_real is True:
+                get_state_start = time.time()
                 real_state = real_controller.get_joint_state()
+                get_state_end = time.time()
+                print(f"Get state time: {(get_state_end - get_state_start)*1000:.2f} ms")
                 q_arm  = jnp.asarray(real_state[0], dtype=jnp.float32)  # 形状 (2,)
                 dq_arm = jnp.asarray(real_state[1], dtype=jnp.float32)  # 形状 (2,)
             
@@ -894,25 +905,23 @@ def run_with_visualization(sim, config, scenario):
                     sim.state_traj[i+1, :][15:17] = real_state[1]
                     sim.current_state.at[15:17].set(dq_arm)
             
+            mj_start = time.time()
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
+            mj_end = time.time()
+            print(f"Mujoco step time: {(mj_end - mj_start)*1000:.2f} ms")
             
             # 定期打印状态
-            current_time = i * config.MPC.dt
-            if current_time - last_print_time >= 1.0:  # 每秒打印
-                pos = current_state[0:3]
-                target_pos = scenario['target_pos']
-                pos_error = np.linalg.norm(pos - target_pos)
-                vel_mag = np.linalg.norm(current_state[9:12])
-                
-                print(f"t={current_time:5.1f}s | "
-                      f"Pos=[{pos[0]:6.3f},{pos[1]:6.3f},{pos[2]:6.3f}] | "
-                      f"Err={pos_error:.4f}m | "
-                      f"Vel={vel_mag:.3f}m/s")
-                
-                last_print_time = current_time
+            current_sim_time = i * config.MPC.dt
+
             
-            # time.sleep(config.MPC.dt)
+            # 实时同步
+            err_time = current_sim_time - (time.time() - start_time)
+            print(f"now time = {time.time()}, start_time = {start_time}, current_time = {current_sim_time}, err_time = {err_time*1000}ms")
+            if err_time < 0:
+                print(f"⚠️ Warning: Simulation is lagging behind real time by {-err_time*1000}ms")
+            else:
+                time.sleep(err_time)
             
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
@@ -1481,7 +1490,7 @@ if __name__ == "__main__":
             scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [1.5, 0.3])
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
-            ee_target = [1, 1, 6]  # 单个目标点
+            ee_target = [1, 1, 2]  # 单个目标点
             scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=15.0)
         elif args.test == 'trajectory':
             waypoints = [[0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
