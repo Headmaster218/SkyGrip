@@ -242,18 +242,32 @@ class Controller:
 
         for i in range(num_steps):
             samples_delta = self.sampler.sample_input_sequence(self.sampler.master_key)
-            samples, costs, gradients = self.rollout_gen.do_rollout(state, reference, optimal_samples, samples_delta, gains)
-            optimal_samples = self.sampler.update(optimal_samples, samples, costs)
-            # update gains
+            samples, costs, gradients = self.rollout_gen.do_rollout(
+                state, reference, optimal_samples, samples_delta, gains
+            )
+
+            # ===== 在这里分支 =====
+            if False:  
+                # 随机射击：只取最优轨迹
+                best = jnp.argmin(costs)
+                optimal_samples = samples[best]
+            elif False:
+                elite = jnp.argsort(costs)[:10]            # M=5 或 10
+                optimal_samples = jnp.mean(samples[elite], axis=0)
+            else:  # 默认 MPPI
+                optimal_samples = self.sampler.update(optimal_samples, samples, costs)
+
+            # update gains (RS 不用梯度更新也无所谓，保留即可)
             self.gains_obj.cur_gains = self.gains_obj.gains_computation(costs, samples, gradients)
-       
+
         # update sampler best control vars
         if shift_guess:
             self.sampler.optimal_samples = self._shift_guess(optimal_samples)
         else:
             self.sampler.optimal_samples = optimal_samples
-        
+
         return optimal_samples
+
     
 
     @partial(jax.jit, static_argnums=(0,))
