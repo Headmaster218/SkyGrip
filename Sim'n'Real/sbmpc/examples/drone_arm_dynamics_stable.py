@@ -26,7 +26,7 @@ COM_LINK2 = jnp.array([-0.00195, 0, 0.079412])
 LINK1_POS = jnp.array([0, -2.5e-05, -0.038])
 LINK2_POS = jnp.array([0, 0, -0.1308])
 
-# 关节参数（从XML）
+# 关节参数
 JOINT_DAMPING = jnp.array([0.372, 0.235])
 JOINT_FRICTION = jnp.array([0.08, 0.203])
 

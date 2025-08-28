@@ -13,7 +13,7 @@ class TaskConfig:
         elif task_name == "reach_point":
             return TaskConfig._reach_point_config(step)
         elif task_name == "arm_control":
-            return TaskConfig._arm_control_config(step)
+            return TaskConfig._end_effector_trajectory_config(step)
         elif task_name == "trajectory":
             return TaskConfig._trajectory_config(step)
         elif task_name == "end_effector_trajectory":
@@ -142,11 +142,26 @@ class TaskConfig:
                     0.0
                 ])
             }
-        else:  
+        elif step == 2:
             return {
-                'dt': 0.04,
-                'horizon': 30,      
-                'samples': 1200,    
+                'dt': 0.02,
+                'horizon': 50,      # 增大预测时域
+                'samples': 2500,    # 增加采样数
+                'lambda': 0.5,      # 略微降低lambda
+                'noise': jnp.array([
+                    1.2,    # 略微增加推力噪声
+                    0.2,    # 略微增加扭矩噪声
+                    0.2,
+                    0.2,
+                    0.2,    # 轻微引入关节噪声
+                    0.2
+                ])
+            }  
+        else:  # step 3
+            return {
+                'dt': 0.02,
+                'horizon': 60,      
+                'samples': 2000,    
                 'lambda': 0.7,      
                 'noise': jnp.array([
                     1.6,    # 减少推力噪声

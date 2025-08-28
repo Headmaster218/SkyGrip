@@ -475,7 +475,7 @@ class AdaptiveObjective(BaseObjective):
             drone_err_norm = jnp.linalg.norm(drone_error)
 
             # 1) 末端误差（远处中等，近处加大）——不归一化
-            ee_weight = jnp.where(ee_err_norm < 0.12, 320.0, 180.0)  # 12cm 内强化
+            ee_weight = jnp.where(ee_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
             cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_error**2, drone_err_norm**2))
 
             # 2) 平动速度（抑制飘）
@@ -582,7 +582,7 @@ class TestScenario:
         }
     
     @staticmethod
-    def arm_control_test(hover_pos, joint_targets, duration=15.0):
+    def arm_control_test(hover_pos, joint_targets, duration=10.0):
         """机械臂控制测试（悬停时）"""
         return {
             'name': 'Arm Control Test',
@@ -1487,11 +1487,11 @@ if __name__ == "__main__":
         elif args.test == 'reach':
             scenario = TestScenario.reach_point_test([1.0, 0.5, 2.0])
         elif args.test == 'arm':
-            scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [1.5, 0.3])
+            scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.5, 0.7])
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
             ee_target = [1, 1, 2]  # 单个目标点
-            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=15.0)
+            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=7.0)
         elif args.test == 'trajectory':
             waypoints = [[0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
             scenario = TestScenario.trajectory_test(waypoints)
@@ -1504,4 +1504,4 @@ if __name__ == "__main__":
         print(f"\nTest completed with result: {results['success'].upper()}")
 
 
-        # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 2 --visualize
+        # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
