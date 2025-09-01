@@ -162,7 +162,7 @@ class TaskConfig:
             return {
                 'dt': 0.03,
                 'horizon': 40,      
-                'samples': 2000,    
+                'samples': 5000,    
                 'lambda': 0.7,      
                 'noise': jnp.array([
                     1.6,    # 减少推力噪声

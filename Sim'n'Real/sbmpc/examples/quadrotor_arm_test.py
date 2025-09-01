@@ -36,7 +36,7 @@ from drone_arm_dynamics_stable import (
 # 导入任务配置
 from task_configs import TaskConfig
 
-USING_ARM_POSITION = True
+USING_ARM_POSITION = False
 
 
 # ============================================================================
@@ -480,7 +480,7 @@ class AdaptiveObjective(BaseObjective):
         else:
             # 1) 末端误差（远处中等，近处加大）——不归一化
             ee_weight = jnp.where(drone_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
-            cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 1.0, drone_err_norm**2, drone_err_norm**2))
+            cost += ee_weight * jnp.sum(drone_err_norm**2)
 
         # 2) 平动速度（抑制飘）
         cost += 8.0 * jnp.sum(vel**2)
@@ -501,6 +501,10 @@ class AdaptiveObjective(BaseObjective):
         cost += 0.15 * (thrust_diff**2)         # 推力偏离悬停
         cost += 0.40 * jnp.sum(inputs[1:4]**2)  # 机体扭矩
         cost += 5.00 * jnp.sum(inputs[4:6]**2)  # 关节扭矩
+
+        if True:
+            cost += 150.0 * jnp.abs(q_joints[0] - reference[7])
+            cost += 150.0 * jnp.abs(q_joints[1] - reference[8])
 
         # ========= 公共项（瘦身后版）=========
         # 对于 END_EFFECTOR_TRAJECTORY，不再额外追 ref_quat、不再加期望角速度/期望推力
@@ -591,15 +595,20 @@ class TestScenario:
             'duration': duration
         }
     
-    # @staticmethod
-    # def trajectory_test(waypoints, duration=20.0):
-    #     """轨迹跟踪测试"""
-    #     return {
-    #         'name': 'Trajectory Test',
-    #         'task_type': TaskType.TRAJECTORY,
-    #         'waypoints': waypoints,
-    #         'duration': duration
-    #     }
+    @staticmethod
+    def arm_swing_test(duration=20.0,
+                    amp_deg=(20.0, 15.0),
+                    freq_hz=(0.5, 0.8)):
+        """飞机悬停，机械臂正弦摆动"""
+        return {
+            'name'      : 'Arm Swing Test',
+            'task_type' : TaskType.ARM_CONTROL,   # 复用现有模式
+            'swing_amp' : amp_deg,
+            'swing_freq': freq_hz,
+            'target_pos': jnp.array([0.0, 0.0, 1.5]),
+            'duration'  : duration
+        }
+
     
     @staticmethod
     def trajectory_test(waypoints=None, duration=20.0, pattern=None, **kwargs):
@@ -789,6 +798,18 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
             config.MPC.horizon,
             config.MPC.dt
         )
+
+    elif scenario['task_type'] == TaskType.ARM_CONTROL and 'swing_amp' in scenario:
+        # 机械臂周期摆动
+        reference = generate_arm_swing_reference(
+            num_iters   = config.sim_iterations,
+            horizon     = config.MPC.horizon,
+            dt          = config.MPC.dt,
+            amp_deg     = scenario['swing_amp'],
+            freq_hz     = scenario['swing_freq'],
+            base_height = scenario['target_pos'][2],
+        )
+
     else:
         # 固定目标
         ref_state = jnp.zeros(17)
@@ -832,6 +853,8 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
         results = analyze_end_effector_results(sim, scenario, config)
     elif scenario['task_type'] == TaskType.TRAJECTORY:
         results = analyze_trajectory_results(sim, scenario, config)
+    elif scenario['task_type'] == TaskType.ARM_CONTROL:
+        results = analyze_arm_control_results(sim, scenario, config)
     else:
         results = analyze_results(sim, scenario, config)
     
@@ -1573,6 +1596,154 @@ def generate_end_effector_trajectory_reference(ee_waypoints, num_iters, horizon,
     
     return reference
 
+
+def analyze_arm_control_results(sim, scenario, config):
+    """
+    飞机悬停 + 机械臂控制实验的结果分析：
+    1) 末端执行器位置误差
+    2) 关节角度跟踪误差
+    """
+
+    # ========== 0. 工具 ==========
+    def fk_end_effector(state):
+        pos  = state[0:3]
+        quat = state[3:7] / (np.linalg.norm(state[3:7]) + 1e-10)
+        q1, q2 = state[7], state[8]
+        return np.asarray(compute_end_effector_position(pos, quat, q1, q2))
+
+    # ========== 1. 真实轨迹 ==========
+    states_np = np.asarray(sim.state_traj)[:-1]        # (T,17) 与参考对齐
+    sim_steps = states_np.shape[0]
+    time_vec  = np.arange(sim_steps) * config.MPC.dt   # (T,)
+
+    ee_actual = np.vstack([fk_end_effector(s) for s in states_np])      # (T,3)
+    drone_actual = states_np[:, 0:3]
+    q_actual  = states_np[:, 7:9]                                        # (T,2)
+
+    # ========== 2. 参考轨迹 ==========
+    #   a) 优先 sim.const_reference
+    #   b) 其次 scenario["reference"] (自生成的 arm_swing_reference)
+    #   c) 最后 scenario["ee_waypoints"]（单点）或固定 0
+    if hasattr(sim, "const_reference"):
+        ref_full = np.asarray(sim.const_reference)[:, 0, :]  # (T,17)
+    elif "reference" in scenario:
+        ref_full = np.asarray(scenario["reference"])[:, 0, :]
+    else:
+        # 只给一个静态 ee_waypoints[0]
+        tgt = np.asarray(scenario.get("ee_waypoints", [[0., 0., 1.5]]))[0]
+        ref_full = np.tile(
+            np.concatenate([tgt, [1,0,0,0], np.zeros(10)]), (sim_steps,1)
+        )
+
+    ee_ref = ref_full[:sim_steps, 0:3]   # (T,3)
+    q_ref  = ref_full[:sim_steps, 7:9]   # (T,2)
+
+    # ========== 3. 误差 ==========
+    ee_err = ee_actual - ee_ref          # (T,3)
+    ee_norm = np.linalg.norm(ee_err, axis=1)
+    drone_norm = np.linalg.norm(drone_actual - ee_ref, axis=1)
+    q_err   = q_actual - q_ref
+    q_norm  = np.linalg.norm(q_err, axis=1)
+
+    # ----------- 打印统计 -----------
+    print("\n" + "="*70)
+    print("Arm-Control Tracking Results")
+    print("="*70)
+    print(f"末端位置误差 (m)")
+    print(f"  Final : {ee_norm[-1]:.4f}")
+    print(f"  Avg   : {ee_norm.mean():.4f}")
+    print(f"  Max   : {ee_norm.max():.4f}")
+    print(f"  Std   : {ee_norm.std():.4f}")
+    print(f"关节角误差 (rad)")
+    print(f"  Final : {q_norm[-1]:.4f}")
+    print(f"  Avg   : {q_norm.mean():.4f}")
+
+    # ========== 4. 绘图 ==========
+    fig = plt.figure(figsize=(14, 10))
+
+    # 4-1 末端 3-D 轨迹
+    ax3d = fig.add_subplot(221, projection='3d')
+    # ax3d.plot(ee_ref[:,0], ee_ref[:,1], ee_ref[:,2], 'r--', lw=2, label='EE Ref')
+    ax3d.plot(ee_actual[:,0], ee_actual[:,1], ee_actual[:,2], 'b-', lw=1.2, label='EE Actual')
+    ax3d.set_title('End-Effector 3-D Trajectory')
+    ax3d.set_xlabel('X [m]'); ax3d.set_ylabel('Y [m]'); ax3d.set_zlabel('Z [m]')
+    ax3d.legend(); ax3d.grid(True)
+
+    # 4-2 XY 平面
+    ax_xy = fig.add_subplot(222)
+    ax_xy.plot(ee_ref[:,0], ee_ref[:,1], 'r--', label='Ref')
+    ax_xy.plot(ee_actual[:,0], ee_actual[:,1], 'b-', label='Actual')
+    ax_xy.set_xlabel('X [m]'); ax_xy.set_ylabel('Y [m]')
+    ax_xy.set_title('EE Trajectory in XY')
+    ax_xy.axis('equal'); ax_xy.grid(True); ax_xy.legend()
+
+    # 4-3 末端误差随时间
+    ax_err = fig.add_subplot(223)
+    ax_err.plot(time_vec, drone_norm, 'k', label='‖ee_err‖')
+    ax_err.axhline(0.05, color='g', ls='--', lw=0.8, label='5 cm')
+    ax_err.set_xlabel('Time [s]'); ax_err.set_ylabel('Error [m]')
+    ax_err.set_title('End-Effector Error')
+    ax_err.grid(True); ax_err.legend()
+
+    # 4-4 关节角度
+    ax_q = fig.add_subplot(224)
+    ax_q.plot(time_vec, q_actual[:,0], 'b',  label='q1 actual')
+    ax_q.plot(time_vec, q_actual[:,1], 'g',  label='q2 actual')
+    ax_q.plot(time_vec, q_ref[:,0],  'b--', label='q1 ref')
+    ax_q.plot(time_vec, q_ref[:,1],  'g--', label='q2 ref')
+    ax_q.set_xlabel('Time [s]'); ax_q.set_ylabel('Angle [rad]')
+    ax_q.set_title('Joint Angles')
+    ax_q.grid(True); ax_q.legend(ncol=2)
+
+    plt.tight_layout(); plt.show()
+
+    # ========== 5. 返回指标 ==========
+    return {
+        'ee_final' : float(ee_norm[-1]),
+        'ee_avg'   : float(ee_norm.mean()),
+        'ee_max'   : float(ee_norm.max()),
+        'ee_std'   : float(ee_norm.std()),
+        'q_final'  : float(q_norm[-1]),
+        'q_avg'    : float(q_norm.mean())
+    }
+
+# ------------------------------------------------------------------
+# 机械臂周期摆动参考：飞机坐标系不动，关节 q1,q2 = A·sin(ωt+φ)
+# ------------------------------------------------------------------
+def generate_arm_swing_reference(
+    num_iters: int,
+    horizon: int,
+    dt: float,
+    amp_deg: Tuple[float, float] = (20.0, 15.0),   # 摆幅（度）
+    freq_hz: Tuple[float, float] = (0.5, 0.8),      # 频率（Hz）
+    base_height: float = 1.5,                       # 悬停高度
+) -> jnp.ndarray:
+    """
+    返回 shape = (num_iters, horizon+1, 17)
+    只改 joint→ 7:9 ；位置固定 [0,0,base_height] & 姿态恒水平
+    """
+    A_rad  = jnp.radians(jnp.asarray(amp_deg,  dtype=jnp.float32))  # (2,)
+    w_rad  = 2 * jnp.pi * jnp.asarray(freq_hz, dtype=jnp.float32)   # (2,)
+
+    # 全局时间轴 t 全长 (T+horizon)
+    total_len = num_iters + horizon
+    t_all = jnp.arange(total_len, dtype=jnp.float32) * dt           # (T+H,)
+
+    # 每时刻关节角   q(t) = A*sin(ω t)
+    q_all = A_rad[None, :] * jnp.sin(t_all[:, None] * w_rad[None, :])   # (T+H, 2)
+
+    # 把它滑窗拼成 (T, H+1, 2)
+    def slice_window(i):
+        return jax.lax.dynamic_slice(q_all, (i, 0), (horizon+1, 2))  # (H+1,2)
+    ref_q = jax.vmap(slice_window)(jnp.arange(num_iters))            # (T,H+1,2)
+
+    # ------- 拼 17 维完整参考 -------
+    ref_state = jnp.zeros((num_iters, horizon+1, 17), dtype=jnp.float32)
+    ref_state = ref_state.at[:, :, 0:3].set(jnp.array([0., 0., base_height]))   # 悬停
+    ref_state = ref_state.at[:, :, 3:7].set(jnp.array([1., 0., 0., 0.]))        # 水平
+    ref_state = ref_state.at[:, :, 7:9].set(ref_q)                              # 摆臂
+    return ref_state
+
 # ============================================================================
 # 批量测试运行器
 # ============================================================================
@@ -1649,7 +1820,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Quadrotor-Arm Progressive Testing')
     parser.add_argument('--test', type=str, default='hover',
                        choices=['hover', 'reach', 'arm', 'trajectory', 
-                               'ee_trajectory', 'all'],
+                               'ee_trajectory', 'all', 'hover_n_arm'],
                        help='Test type to run')
     parser.add_argument('--step', type=int, default=1, choices=[1, 2, 3],
                        help='Dynamics complexity step')
@@ -1678,13 +1849,16 @@ if __name__ == "__main__":
         elif args.test == 'trajectory':
             waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5], [0, 0, 1.5]]
             scenario = TestScenario.trajectory_test(waypoints, duration=10.0)
+        elif args.test == 'hover_n_arm':
+            scenario = TestScenario.arm_swing_test(duration=10.0,
+                                           amp_deg=(30,30),
+                                           freq_hz=(0.4,0.4))
         
         sim, results = run_test_with_diagnostics(scenario, args.step, args.visualize)
         
         if args.plot:
             plot_results(sim, scenario, None)
         
-        print(f"\nTest completed with result: {results['success'].upper()}")
 
 
         # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
