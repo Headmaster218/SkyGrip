@@ -229,7 +229,7 @@ class Simulation(Simulator):
         # time_start = time.time_ns()
         # print("iteration: ", self.iter)
         # print("current state: ", self.current_state_vec())
-        input_sequence = self.controller.command(self.current_state_vec(), self.const_reference, num_steps=1).block_until_ready()
+        input_sequence = self.controller.command(self.current_state_vec(), self.const_reference, self.iter, num_steps=1).block_until_ready()
         ctrl = input_sequence[0, :].block_until_ready()
         # print("computation time: {:.3f} [ms]".format(1e-6 * (time.time_ns() - time_start)))
 
@@ -320,7 +320,7 @@ def build_all(config: settings.Config, objective: BaseObjective,
     sim = Simulation(sim_state_init, sim_dynamics_model, rollout_generator, sampler, gains, reference, config, visualizer_params, obstacles)
     
     # dummy for jitting
-    input_sequence = sim.controller.command(solver_x_init, reference, False).block_until_ready()
+    input_sequence = sim.controller.command(solver_x_init, reference, 0).block_until_ready()
     
     return sim
 

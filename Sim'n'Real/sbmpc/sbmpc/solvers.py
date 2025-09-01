@@ -19,17 +19,17 @@ class BaseObjective(ABC):
         self.robot_model = robot_model
 
     @abstractmethod
-    def running_cost(self, state, inputs, reference):
+    def running_cost(self, state, inputs, reference, iteration):
         pass
 
-    def final_cost(self, state, reference):
+    def final_cost(self, state, reference, iteration):
         return 0.0
 
-    def cost_and_constraints(self, state, inputs, reference):
-        return self.running_cost(state, inputs, reference) + jnp.sum(self.make_barrier(self.constraints(state, inputs, reference)))
+    def cost_and_constraints(self, state, inputs, reference, iteration):
+        return self.running_cost(state, inputs, reference, iteration) + jnp.sum(self.make_barrier(self.constraints(state, inputs, reference)))
 
-    def final_cost_and_constraints(self, state, reference):
-        return self.final_cost(state, reference) + jnp.sum(self.make_barrier(self.terminal_constraints(state, reference)))
+    def final_cost_and_constraints(self, state, reference, iteration):
+        return self.final_cost(state, reference, iteration) + jnp.sum(self.make_barrier(self.terminal_constraints(state, reference)))
 
     def make_barrier(self, constraint_array):
         constraint_array = jnp.where(constraint_array > 0, 1e3, 0.0)
@@ -106,12 +106,12 @@ class RolloutGenerator():
         return jnp.clip(control_variables, self.input_min_full_horizon, self.input_max_full_horizon)
     
 
-    @partial(jax.vmap, in_axes=(None, None, None, 0), out_axes=(0, 0))
-    def rollout_all(self, initial_state, reference, control_variables):
+    @partial(jax.vmap, in_axes=(None, None, None, 0, None), out_axes=(0, 0))
+    def rollout_all(self, initial_state, reference, control_variables, iteration):
         if self.config.MPC.sensitivity:
             return self.rollout_single_with_sensitivity(initial_state, reference, control_variables)
         else:
-            return self.rollout_single(initial_state, reference, control_variables)
+            return self.rollout_single(initial_state, reference, control_variables, iteration)
     
     def interpolate_control(self, control_variables):
         """"
@@ -123,22 +123,30 @@ class RolloutGenerator():
         else:
             return self.clip_input_single(control_variables)
     
-    def rollout_single(self, initial_state, reference, control_variables):
+    def rollout_single(self, initial_state, reference, control_variables, iteration):
         cost = 0.0
         curr_state = initial_state
 
         control_variables = self.interpolate_control(control_variables)
         
-        def cost_and_state_rollout(idx, cost_and_state):
-            cost, curr_state = cost_and_state
-            cost += self.dt*self.cost_and_constraints(curr_state, control_variables[idx, :], reference[idx, :])
-            next_state = self.model.integrate_rollout_single(curr_state, control_variables[idx, :], self.dt)
+        def cost_and_state_rollout(idx, carry):
+            cost, curr_state, iteration = carry
             
-            return cost, next_state
+            ref = reference[iteration + idx, :]         # 动态参考
+            ctrl = control_variables[idx, :]
+            
+            cost += self.dt * self.cost_and_constraints(curr_state, ctrl, ref, iteration)
+            next_state = self.model.integrate_rollout_single(curr_state, ctrl, self.dt)
 
-        cost, final_state = jax.lax.fori_loop(0, self.horizon, cost_and_state_rollout, (cost, curr_state))
+            return (cost, next_state, iteration)
 
-        cost += self.dt*self.final_cost_and_constraints(final_state, reference[self.horizon, :])
+        # 注意 carry 要带上 iteration
+        carry_init = (cost, curr_state, iteration)
+
+        cost, final_state, _ = jax.lax.fori_loop(0, self.horizon, cost_and_state_rollout, carry_init)
+
+
+        cost += self.dt*self.final_cost_and_constraints(final_state, reference[self.horizon, :], iteration)
 
         return cost, control_variables
     
@@ -199,7 +207,7 @@ class RolloutGenerator():
     #     return cost, input_sequence
 
     @partial(jax.jit, static_argnums=(0,))  
-    def do_rollout(self, state, reference, optimal_samples, samples_delta, gains):
+    def do_rollout(self, state, reference, optimal_samples, samples_delta, iteration):
         gradients = None
 
         if self.config.MPC.smoothing == "Spline":
@@ -214,7 +222,7 @@ class RolloutGenerator():
         if self.compute_gains:
             (costs, control_vars_all), gradients = self.rollout_sens_to_state(state, reference, control_vars_all)
         else:
-            costs, control_vars_all = self.rollout_all(state, reference, control_vars_all)
+            costs, control_vars_all = self.rollout_all(state, reference, control_vars_all, iteration)
 
         samples_delta_clipped = self.compute_samples_delta(control_vars_all, optimal_samples)
         
@@ -235,7 +243,7 @@ class Controller:
         self.sampler = sampler
         self.gains_obj = gains_obj
            
-    def command(self, state, reference, shift_guess=True, num_steps=1):
+    def command(self, state, reference, iteration, shift_guess=True, num_steps=1):
 
         optimal_samples = self.sampler.optimal_samples
         gains = self.gains_obj.cur_gains
@@ -243,7 +251,7 @@ class Controller:
         for i in range(num_steps):
             samples_delta = self.sampler.sample_input_sequence(self.sampler.master_key)
             samples, costs, gradients = self.rollout_gen.do_rollout(
-                state, reference, optimal_samples, samples_delta, gains
+                state, reference, optimal_samples, samples_delta, iteration
             )
 
             # ===== 在这里分支 =====

@@ -7,6 +7,7 @@ class TaskConfig:
     @staticmethod
     def get_config_for_task(task_name, step=1):
         """根据任务和步骤返回配置"""
+        return TaskConfig._end_effector_trajectory_config(step)
         
         if task_name == "hover":
             return TaskConfig._hover_config(step)
@@ -159,8 +160,8 @@ class TaskConfig:
             }  
         else:  # step 3
             return {
-                'dt': 0.02,
-                'horizon': 60,      
+                'dt': 0.03,
+                'horizon': 40,      
                 'samples': 2000,    
                 'lambda': 0.7,      
                 'noise': jnp.array([

@@ -36,9 +36,7 @@ from drone_arm_dynamics_stable import (
 # 导入任务配置
 from task_configs import TaskConfig
 
-# # GPU设置
-# os.environ['XLA_FLAGS'] = '--xla_gpu_triton_gemm_any=True'
-# jax.config.update("jax_default_matmul_precision", "high")
+USING_ARM_POSITION = True
 
 
 # ============================================================================
@@ -447,7 +445,10 @@ class AdaptiveObjective(BaseObjective):
         self.w_torque = 0.01
         self.w_joint_ctrl = 0.001 if self.step > 1 else 0.0
         
-    def running_cost(self, state, inputs, reference):
+    def running_cost(self, state, inputs, reference, steps):
+        # ── 兼容 reference 既可能是一维 (17,) 也可能是二维 (H,17) ──
+        if reference.ndim == 2:        # e.g. (horizon+1, 17)
+            reference = reference[0]   # 只取当前时刻那一行 → (17,)
         # 解析状态
         pos       = state[0:3]
         quat      = state[3:7]
@@ -461,51 +462,45 @@ class AdaptiveObjective(BaseObjective):
 
         cost = 0.0
 
-        # ========= 仅保留“末端轨迹”模式的极简版 =========
-        if self.task_type == TaskType.END_EFFECTOR_TRAJECTORY:
-            ref_ee_pos = reference[0:3]
+        ref_ee_pos = reference[0:3]
 
-            # 末端位置误差
-            ee_pos   = compute_end_effector_position(pos, quat, q_joints[0], q_joints[1])
-            ee_error = ee_pos - ref_ee_pos
-            ee_err_norm = jnp.linalg.norm(ee_error)
+        # 末端位置误差
+        ee_pos   = compute_end_effector_position(pos, quat, q_joints[0], q_joints[1])
+        ee_error = ee_pos - ref_ee_pos
+        ee_err_norm = jnp.linalg.norm(ee_error)
 
-            # compute drone pos error
-            drone_error = ref_ee_pos - pos
-            drone_err_norm = jnp.linalg.norm(drone_error)
+        # compute drone pos error
+        drone_error = ref_ee_pos - pos
+        drone_err_norm = jnp.linalg.norm(drone_error)
 
+        if USING_ARM_POSITION:
             # 1) 末端误差（远处中等，近处加大）——不归一化
             ee_weight = jnp.where(ee_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
-            cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_error**2, drone_err_norm**2))
-
-            # 2) 平动速度（抑制飘）
-            cost += 8.0 * jnp.sum(vel**2)
-
-            # 3) 角速度（防晃）
-            cost += 3.0 * jnp.sum(omega**2)
-
-            # 4) 倾角（不强追姿态参考，只要别过度倾斜）
-            R = quat2rotm(quat)
-            tilt = 1.0 - R[2, 2]              # 水直对齐越好，值越小
-            cost += 12.0 * (tilt**2)
-
-            # 5) 关节速度（抑制手臂抖动）
-            cost += 7.5 * jnp.sum(dq_joints**2)
-
-            # 6) 输入正则（能量项）
-            thrust_diff = inputs[0] - MASS_TOTAL * GRAVITY
-            cost += 0.15 * (thrust_diff**2)         # 推力偏离悬停
-            cost += 0.40 * jnp.sum(inputs[1:4]**2)  # 机体扭矩
-            cost += 5.00 * jnp.sum(inputs[4:6]**2)  # 关节扭矩
-
-            # ✅ 到此为止，足够闭环且好调；其它花哨项去掉
+            cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_err_norm**2, drone_err_norm**2))
         else:
-            # 其它 task 先沿用你原逻辑（或再按这个思路瘦身）
-            ref_pos  = reference[0:3] if reference.shape[0] >= 3 else jnp.array([0,0,1.5])
-            pos_error = pos - ref_pos
-            cost += self.w_pos * jnp.sum(pos_error**2)
-            cost += self.w_vel * jnp.sum(vel**2)
-            # ……（保持你的原分支或另行精简）
+            # 1) 末端误差（远处中等，近处加大）——不归一化
+            ee_weight = jnp.where(drone_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
+            cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 1.0, drone_err_norm**2, drone_err_norm**2))
+
+        # 2) 平动速度（抑制飘）
+        cost += 8.0 * jnp.sum(vel**2)
+
+        # 3) 角速度（防晃）
+        cost += 3.0 * jnp.sum(omega**2)
+
+        # 4) 倾角（不强追姿态参考，只要别过度倾斜）
+        R = quat2rotm(quat)
+        tilt = 1.0 - R[2, 2]              # 水直对齐越好，值越小
+        cost += 12.0 * (tilt**2)
+
+        # 5) 关节速度（抑制手臂抖动）
+        cost += 7.5 * jnp.sum(dq_joints**2)
+
+        # 6) 输入正则（能量项）
+        thrust_diff = inputs[0] - MASS_TOTAL * GRAVITY
+        cost += 0.15 * (thrust_diff**2)         # 推力偏离悬停
+        cost += 0.40 * jnp.sum(inputs[1:4]**2)  # 机体扭矩
+        cost += 5.00 * jnp.sum(inputs[4:6]**2)  # 关节扭矩
 
         # ========= 公共项（瘦身后版）=========
         # 对于 END_EFFECTOR_TRAJECTORY，不再额外追 ref_quat、不再加期望角速度/期望推力
@@ -520,7 +515,10 @@ class AdaptiveObjective(BaseObjective):
         cost = jnp.where(jnp.isinf(cost), 1e6, cost)
         return jnp.clip(cost, 0.0, 1e6)
 
-    def final_cost(self, state, reference):
+    def final_cost(self, state, reference, steps):
+        # 允许 reference 为 (17,) 或 (H,17) 等
+        if reference.ndim == 2:
+            reference = reference[steps]      # 扁平化
         """终端成本"""
         pos = state[0:3]
         vel = state[9:12]
@@ -593,13 +591,50 @@ class TestScenario:
             'duration': duration
         }
     
+    # @staticmethod
+    # def trajectory_test(waypoints, duration=20.0):
+    #     """轨迹跟踪测试"""
+    #     return {
+    #         'name': 'Trajectory Test',
+    #         'task_type': TaskType.TRAJECTORY,
+    #         'waypoints': waypoints,
+    #         'duration': duration
+    #     }
+    
     @staticmethod
-    def trajectory_test(waypoints, duration=20.0):
-        """轨迹跟踪测试"""
+    def trajectory_test(waypoints=None, duration=20.0, pattern=None, **kwargs):
+        """轨迹跟踪测试：支持多点或周期性预设路径"""
+        # 若指定预设模式，则生成对应的 waypoints
+        if pattern is not None:
+            if pattern == "circle":
+                # 圆轨迹参数：半径、中心、高度、点数、循环次数
+                r = kwargs.get('radius', 1.0)             # 圆半径
+                center = kwargs.get('center', (0.0, 0.0)) # 圆心在水平面的坐标
+                height = kwargs.get('height', 1.5)        # 圆轨迹所在高度
+                points = kwargs.get('points', 20)         # 单圈轨迹离散点数
+                cycles = kwargs.get('cycles', 1)          # 重复圈数
+                # 生成一个圆轨迹的离散点列表（首尾相接）
+                base_points = []
+                for k in range(points):
+                    theta = 2 * np.pi * k / points
+                    x = center[0] + r * np.cos(theta)
+                    y = center[1] + r * np.sin(theta)
+                    base_points.append([x, y, height])
+                base_points.append(base_points[0])  # 闭合轨迹，重复起点
+                # 按需求重复多圈
+                waypoints = []
+                for c in range(cycles):
+                    # 最后一圈之后不再重复终点，以免出现重复点停留
+                    segment = base_points if c == cycles - 1 else base_points[:-1]
+                    waypoints.extend(segment)
+            else:
+                raise ValueError(f"未识别的轨迹模式: {pattern}")
+        if waypoints is None:
+            raise ValueError("必须提供 waypoints 列表或指定 pattern")
         return {
             'name': 'Trajectory Test',
             'task_type': TaskType.TRAJECTORY,
-            'waypoints': waypoints,
+            'waypoints': jnp.array(waypoints, dtype=jnp.float32),
             'duration': duration
         }
     
@@ -795,6 +830,8 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
     # 10. 分析结果
     if scenario['task_type'] == TaskType.END_EFFECTOR_TRAJECTORY:
         results = analyze_end_effector_results(sim, scenario, config)
+    elif scenario['task_type'] == TaskType.TRAJECTORY:
+        results = analyze_trajectory_results(sim, scenario, config)
     else:
         results = analyze_results(sim, scenario, config)
     
@@ -904,6 +941,11 @@ def run_with_visualization(sim, config, scenario):
                     mj_data.qvel[6:8] = real_state[1]
                     sim.state_traj[i+1, :][15:17] = real_state[1]
                     sim.current_state.at[15:17].set(dq_arm)
+
+            if scenario['task_type'] == TaskType.TRAJECTORY:
+                # 对于轨迹任务，更新目标球到第一个路径点
+                target_ee_pos = sim.const_reference[i, 0][0:3]  # or reference[i, 0:3]
+                mj_data.mocap_pos[1] = target_ee_pos
             
             mj_start = time.time()
             mujoco.mj_forward(mj_model, mj_data)
@@ -1251,6 +1293,138 @@ def analyze_end_effector_results(sim, scenario, config):
     
     return results
 
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D   # noqa: F401  # 激活 3-D 支持
+
+def analyze_trajectory_results(sim, scenario, config):
+    """
+    画出实际轨迹 vs 参考轨迹（2-D、3-D），并给出误差统计。
+    依赖：
+        sim.state_traj                (T+1, 17)  实际状态轨迹
+        sim.const_reference 或 scenario['reference'] (T, H+1, 17)  参考轨迹
+    """
+    print("\n" + "=" * 70)
+    print("Trajectory Tracking Results")
+    print("=" * 70)
+
+
+
+    # ---------- 1. 取得实际轨迹 ----------
+    actual_pos = np.asarray(sim.state_traj[:, 0:3])            # (T+1, 3)
+    actual_pos = actual_pos[:-1]                               # 与参考长度对齐 (T, 3)
+    sim_steps  = actual_pos.shape[0]
+    time_vec   = np.arange(sim_steps) * config.MPC.dt          # (T,)
+
+    # ------------- 若使用末端执行器位置作为轨迹 -------------
+    if USING_ARM_POSITION:
+        ee_positions = []
+        for i in range(len(sim.state_traj)):
+            state = sim.state_traj[i]
+            pos = state[0:3]
+            quat = state[3:7]
+            q1, q2 = state[7], state[8]
+            
+            # 归一化四元数
+            quat = quat / (jnp.linalg.norm(quat) + 1e-10)
+            
+            ee_pos = compute_end_effector_position(pos, quat, q1, q2)
+            ee_positions.append(ee_pos)
+        
+        ee_positions = jnp.array(ee_positions)
+        actual_pos =  ee_positions[:-1]    
+
+    # ----------——————————————————————————
+
+    # ---------- 2. 取得参考轨迹 ----------
+    # 优先使用 simulation 内部的完整 reference
+    if hasattr(sim, "const_reference"):
+        ref_pos = np.asarray(sim.const_reference[:, 0, 0:3])   # (T, 3) 只取窗口第 0 步
+    elif "reference" in scenario:
+        ref_pos = np.asarray(scenario["reference"][:, 0, 0:3])
+    elif "waypoints" in scenario:
+        # 若只有稀疏 waypoints，则插值成与仿真步数相同的轨迹
+        waypoints = np.asarray(scenario["waypoints"])
+        seg_times = np.linspace(0, sim_steps * config.MPC.dt, waypoints.shape[0])
+        ref_pos = np.empty_like(actual_pos)
+        for k in range(3):      # x y z
+            ref_pos[:, k] = np.interp(time_vec, seg_times, waypoints[:, k])
+    else:
+        raise ValueError("无法在 scenario / sim 中找到参考轨迹！")
+
+    # ---------- 3. 误差统计 ----------
+    errors = np.linalg.norm(actual_pos - ref_pos, axis=1)      # (T,)
+
+    print(f"\nTracking Performance:")
+    print(f"  Final error   : {errors[-1]:.4f} m")
+    print(f"  Average error : {errors.mean():.4f} m")
+    print(f"  Maximum error : {errors.max():.4f} m")
+    print(f"  Std-dev error : {errors.std():.4f} m")
+
+    # ---------- 4. 绘图 ----------
+    fig = plt.figure(figsize=(30, 10))
+
+    # ---- 4-1 3-D 轨迹 ----
+    ax3d = fig.add_subplot(141, projection='3d')
+    ax3d.plot(ref_pos[:, 0], ref_pos[:, 1], ref_pos[:, 2],
+              'r--',  linewidth=2, label='Reference')
+    ax3d.plot(actual_pos[:, 0], actual_pos[:, 1], actual_pos[:, 2],
+              'b-',  linewidth=1.2, label='Actual')
+    ax3d.set_title('3-D Trajectory')
+    ax3d.set_xlabel('X [m]')
+    ax3d.set_ylabel('Y [m]')
+    ax3d.set_zlabel('Z [m]')
+    ax3d.legend()
+    ax3d.grid(True)
+
+    # ---- 4-2 XY 平面 ----
+    ax_xy = fig.add_subplot(142)
+    ax_xy.plot(ref_pos[:, 0], ref_pos[:, 1], 'r--', label='Reference')
+    ax_xy.plot(actual_pos[:, 0], actual_pos[:, 1], 'b-',  label='Actual')
+    ax_xy.set_title('Trajectory in XY Plane')
+    ax_xy.set_xlabel('X [m]')
+    ax_xy.set_ylabel('Y [m]')
+    ax_xy.axis('equal')
+    ax_xy.legend()
+    ax_xy.grid(True)
+
+    # ---- 4-3 误差随时间 ----
+    ax_err = fig.add_subplot(143)
+    ax_err.plot(time_vec, errors, 'k-', label='‖pos_err‖')
+    ax_err.axhline(0.05, color='g', ls='--', lw=0.8, label='5 cm')
+    ax_err.axhline(0.10, color='r', ls='--', lw=0.8, label='10 cm')
+    ax_err.set_title('Tracking Error vs Time')
+    ax_err.set_xlabel('Time [s]')
+    ax_err.set_ylabel('Error [m]')
+    ax_err.legend()
+    ax_err.grid(True)
+
+    # ---- 4-4 位置分量 ----
+    ax_pos = fig.add_subplot(144)
+    ax_pos.plot(time_vec, actual_pos[:, 0], 'b',  label='X actual')
+    ax_pos.plot(time_vec, actual_pos[:, 1], 'g',  label='Y actual')
+    ax_pos.plot(time_vec, actual_pos[:, 2], 'r',  label='Z actual')
+    ax_pos.plot(time_vec, ref_pos[:, 0], 'b--',   label='X ref')
+    ax_pos.plot(time_vec, ref_pos[:, 1], 'g--',   label='Y ref')
+    ax_pos.plot(time_vec, ref_pos[:, 2], 'r--',   label='Z ref')
+    ax_pos.set_title('Position Components')
+    ax_pos.set_xlabel('Time [s]')
+    ax_pos.set_ylabel('Pos [m]')
+    ax_pos.legend(ncol=2)
+    ax_pos.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+    # ---------- 5. 结果 dict ----------
+    return {
+        'final_error': float(errors[-1]),
+        'avg_error'  : float(errors.mean()),
+        'max_error'  : float(errors.max()),
+        'std_error'  : float(errors.std())
+    }
+
+
 def plot_results(sim, scenario, config):
     """绘制结果图表"""
     # 如果没有传入config，使用sim中的信息
@@ -1335,44 +1509,53 @@ def plot_results(sim, scenario, config):
     plt.tight_layout()
     plt.show()
 
+def generate_trajectory_reference(
+    waypoints,       # list/ndarray, shape (N,3)
+    num_iters,       # int: 仿真步数
+    horizon,         # int: MPC 预测窗
+    dt,              # float: 控制周期
+    quat=jnp.array([1., 0., 0., 0.], dtype=jnp.float32)  # 姿态参考
+):
+    """
+    Return shape: (num_iters, horizon+1, 17)
+    """
+    # ---------- 1) 预处理 ----------
+    wp = jnp.asarray(waypoints, dtype=jnp.float32)        # (N,3)
+    n_seg      = wp.shape[0] - 1
+    total_time = num_iters * dt                           # 总时长
+    seg_time   = total_time / n_seg                       # 每段时长
 
-def generate_trajectory_reference(waypoints, num_iters, horizon, dt):
-    """生成时变轨迹参考"""
-    reference = jnp.zeros((num_iters, horizon + 1, 17))
+    total_steps = num_iters + horizon                     # 需要的最长 index
+    t_all       = jnp.arange(total_steps, dtype=jnp.float32) * dt
 
-    # 计算轨迹总时长
-    total_time = num_iters * dt
-    segment_time = total_time / (len(waypoints) - 1)
+    # ---------- 2) 逐时刻计算路径点 ----------
+    seg_idx  = jnp.clip((t_all / seg_time).astype(jnp.int32), 0, n_seg - 1)
+    alpha    = (t_all - seg_idx * seg_time) / seg_time    # 归一化 0~1
+    start_wp = wp[seg_idx]                                # (total_steps,3)
+    end_wp   = wp[seg_idx + 1]
+    pos_all  = start_wp + alpha[:, None] * (end_wp - start_wp)  # (total_steps,3)
 
-    for iter_idx in range(num_iters):
-        current_time = iter_idx * dt
+    # ---------- 3) 滑动窗口构造 (num_iters, horizon+1, 3) ----------
+    def slice_window(i):
+        return jax.lax.dynamic_slice(pos_all,  # 起点
+                                     (i, 0),   # offset
+                                     (horizon + 1, 3))  # size
+    ref_pos = jax.vmap(slice_window)(jnp.arange(num_iters))  # (num_iters, h+1, 3)
 
-        # 确定当前在哪个轨迹段
-        segment_idx = min(int(current_time / segment_time), len(waypoints) - 2)
-        local_time = (current_time - segment_idx * segment_time) / segment_time
-        local_time = jnp.clip(local_time, 0.0, 1.0)
-
-        # 线性插值当前位置
-        start_pos = jnp.array(waypoints[segment_idx])
-        end_pos = jnp.array(waypoints[segment_idx + 1])
-        current_pos = start_pos + local_time * (end_pos - start_pos)
-
-        # 生成预测时域参考
-        for h in range(horizon + 1):
-            future_time = current_time + h * dt
-            future_segment_idx = min(int(future_time / segment_time), len(waypoints) - 2)
-            future_local_time = (future_time - future_segment_idx * segment_time) / segment_time
-            future_local_time = jnp.clip(future_local_time, 0.0, 1.0)
-
-            future_start = jnp.array(waypoints[future_segment_idx])
-            future_end = jnp.array(waypoints[future_segment_idx + 1])
-            future_pos = future_start + future_local_time * (future_end - future_start)
-
-            # 填充参考状态
-            reference = reference.at[iter_idx, h, 0:3].set(future_pos)
-            reference = reference.at[iter_idx, h, 3:7].set(jnp.array([1., 0., 0., 0.]))  # 四元数
-            reference = reference.at[iter_idx, h, 7:9].set(jnp.zeros(2))  # 关节角度  
-    return reference
+    # ---------- 4) 拼 17 维完整状态 ----------
+    zeros_2 = jnp.zeros((num_iters, horizon + 1, 2),  dtype=jnp.float32)   # 关节角
+    zeros_6 = jnp.zeros((num_iters, horizon + 1, 6),  dtype=jnp.float32)   # 速度
+    full_ref = jnp.concatenate(
+        [
+            ref_pos,                                                             # 0:3 位置
+            jnp.broadcast_to(quat, (num_iters, horizon + 1, 4)),                 # 3:7 姿态
+            zeros_2,                                                             # 7:9 关节角
+            zeros_6,                                                             # 9:15 线/角速度
+            zeros_2,                                                             # 15:17 关节角速度
+        ],
+        axis=-1,
+    )
+    return full_ref
 
 def generate_end_effector_trajectory_reference(ee_waypoints, num_iters, horizon, dt):
     """生成末端执行器轨迹参考 - 改为2D数组版本"""
@@ -1491,10 +1674,10 @@ if __name__ == "__main__":
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
             ee_target = [1, 1, 2]  # 单个目标点
-            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=7.0)
+            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=15.0)
         elif args.test == 'trajectory':
-            waypoints = [[0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
-            scenario = TestScenario.trajectory_test(waypoints)
+            waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5], [0, 0, 1.5]]
+            scenario = TestScenario.trajectory_test(waypoints, duration=10.0)
         
         sim, results = run_test_with_diagnostics(scenario, args.step, args.visualize)
         
