@@ -161,15 +161,15 @@ class TaskConfig:
         else:  # step 3
             return {
                 'dt': 0.03,
-                'horizon': 40,      
-                'samples': 5000,    
+                'horizon': 20,      
+                'samples': 1000,    
                 'lambda': 0.7,      
                 'noise': jnp.array([
                     1.6,    # 减少推力噪声
                     0.6,    # 减少X扭矩（避免过冲）
                     0.7,    # 保持Y
                     0.3,    # Z很好
-                    1.0,    # 平衡的关节噪声
-                    0.8   
+                    0.5,    # 平衡的关节噪声
+                    0.2   
                 ])
             }

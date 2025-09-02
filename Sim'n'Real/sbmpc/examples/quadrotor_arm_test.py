@@ -145,13 +145,13 @@ class RealRobotController:
         self.LEN_4 = 4
         # self.TORQUE_ENABLE = 1
 
-        self.angle_offset = [-115,180]
+        self.angle_offset = [-115,-180]
         self.max_torque_per_joint = [4.5, 1]
         self.max_pwm_val = 855
 
         self.e_break = [0.235, 0.372]  # 电子制动系数
         self.stall_torque = [3.0, 1.5]  # 每个关节的额定力矩（Nm）
-        self.torque_limit = [1.0, 1.0]  # 每个关节的力矩限制（Nm）
+        self.torque_limit = [0.5, 0.2]  # 每个关节的力矩限制（Nm）
         self.full_speed = [77 * 2 * np.pi / 60 , 57 * 2 * np.pi / 60]  # 每个关节的最大速度（弧度/秒）
 
 
@@ -1864,7 +1864,7 @@ if __name__ == "__main__":
         elif args.test == 'hover_n_arm':
             scenario = TestScenario.arm_swing_test(duration=10.0,
                                            amp_deg=(30,30),
-                                           freq_hz=(0.4,0.4))
+                                           freq_hz=(0.3,0.3))
         
         sim, results = run_test_with_diagnostics(scenario, args.step, args.visualize)
         
