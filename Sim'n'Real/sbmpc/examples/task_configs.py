@@ -160,8 +160,8 @@ class TaskConfig:
             }  
         else:  # step 3
             return {
-                'dt': 0.03,
-                'horizon': 20,      
+                'dt': 0.04,
+                'horizon': 25,
                 'samples': 1000,    
                 'lambda': 0.7,      
                 'noise': jnp.array([
