@@ -5,6 +5,8 @@
 """
 
 import os
+import socket
+import struct
 import sys
 import jax
 import jax.numpy as jnp
@@ -37,6 +39,40 @@ from drone_arm_dynamics_stable import (
 from task_configs import TaskConfig
 
 USING_ARM_POSITION = False
+USING_WIFI_RASPI = True
+
+if USING_WIFI_RASPI:
+    raspi_ip =  '192.168.0.206'
+    raspi_port = 5606
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", 5605))   # 监听本机 5005 端口
+
+def recv_latest(sock, fmt="ffi", bufsize=1024):
+    """
+    从UDP缓冲区取出所有数据，只返回 i 最大的那条
+    :param sock: 已经 bind 的 UDP socket
+    :param fmt: struct 格式串，默认 "ffi" (float, float, int)
+    :param bufsize: 单个 UDP 包最大字节数
+    :return: (unpacked_data, addr) 或 None
+    """
+    size = struct.calcsize(fmt)
+    newest = None
+    max_i = -float("inf")
+
+    sock.setblocking(False)  # 设置非阻塞
+    while True:
+        try:
+            data, addr = sock.recvfrom(bufsize)
+            values = struct.unpack(fmt, data[:size])
+            *others, i = values
+            if i > max_i:
+                max_i = i
+                newest = values
+        except BlockingIOError:
+            break  # 缓冲区已空
+
+    sock.setblocking(True)   # 恢复阻塞
+    return newest
 
 
 # ============================================================================
@@ -705,7 +741,7 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
         robot_config.q_init = jnp.array([
             0., 0., 1.5,      # 位置
             1., 0., 0., 0.,   # 四元数
-            0.2, -0.2         # 初始关节角度（非零）
+            0.0, -0.0         # 初始关节角度（非零）
         ], dtype=jnp.float32)
         initial_state = robot_config.q_init
         initial_ee = compute_end_effector_position(
@@ -884,7 +920,7 @@ def run_test_with_diagnostics(scenario: Dict, dynamics_step: int = 1, visualize:
 def run_with_visualization(sim, config, scenario):
     """带MuJoCo可视化运行"""
     print("\nRunning with MuJoCo visualization...")
-    use_real = real_controller is not None
+    use_real = (real_controller is not None) or (USING_WIFI_RASPI is True)
     print(f"Using real robot controller: {use_real}")
     
     mj_model = mujoco.MjModel.from_xml_path("examples/drone_direct_control.xml")
@@ -905,40 +941,29 @@ def run_with_visualization(sim, config, scenario):
         # 更新mocap body的位置
         mj_data.mocap_pos[0] = target_ee_pos
     
-    try:
-        start_time = time.time() +0.5
-        
+    try:        
+        start_time = time.time()
         for i in range(config.sim_iterations):
 
-            sim_start = time.time()
-            # SBMPC步进
-            sim.step()
-            sim_end = time.time()
-            print(f"Sim step time: {(sim_end - sim_start)*1000:.2f} ms")
+            if i == 1:
+                start_time = time.time()
 
             ctrl = sim.input_traj[i, :]
-            
-            # 获取当前状态
-            current_state = sim.state_traj[i+1, :]
-
+            current_state = sim.state_traj[i, :]
             arm_torques = ctrl[4:6]
 
-            # 发送控制到真实机器人
-            if use_real is True:
-                send_torque_start = time.time()
-                real_controller.send_torque(arm_torques) #0.25ms
-                send_torque_end = time.time()
-                print(f"Send torque time: {(send_torque_end - send_torque_start)*1000:.2f} ms")
-            
-            # 检查NaN
-            if jnp.any(jnp.isnan(current_state)):
-                print(f"\n⚠️ NaN detected at step {i}!")
-                break
 
             # 获取真实机器人状态
             if use_real is True:
                 get_state_start = time.time()
-                real_state = real_controller.get_joint_state()
+                if USING_WIFI_RASPI:
+                    values = recv_latest(sock, "ffffi")
+                    if values is not None:
+                        real_state = [list(values[:2]), list(values[2:4])]
+                    else:
+                        real_state = current_state[0:3]
+                else:
+                    real_state = real_controller.get_joint_state()
                 get_state_end = time.time()
                 print(f"Get state time: {(get_state_end - get_state_start)*1000:.2f} ms")
                 q_arm  = jnp.asarray(real_state[0], dtype=jnp.float32)  # 形状 (2,)
@@ -948,12 +973,13 @@ def run_with_visualization(sim, config, scenario):
             mj_data.qpos[0:3] = current_state[0:3]
             mj_data.qpos[3:7] = current_state[3:7]
             if mj_model.nq > 7:
-                if use_real is False:
-                    mj_data.qpos[7:9] = current_state[7:9]
-                else:
+                if use_real is True:
                     mj_data.qpos[7:9] = real_state[0]
                     sim.state_traj[i+1, :][7:9] = real_state[0]
                     sim.current_state = sim.current_state.at[7:9].set(q_arm)
+                else:
+                    mj_data.qpos[7:9] = current_state[7:9]
+
 
             # Add noise test
             if i == 30 and False:
@@ -970,12 +996,38 @@ def run_with_visualization(sim, config, scenario):
             mj_data.qvel[0:3] = current_state[9:12]
             mj_data.qvel[3:6] = current_state[12:15]
             if mj_model.nv > 6:
-                if use_real is False:
-                    mj_data.qvel[6:8] = current_state[15:17]
-                else:
+                if use_real is True:
                     mj_data.qvel[6:8] = real_state[1]
                     sim.state_traj[i+1, :][15:17] = real_state[1]
                     sim.current_state = sim.current_state.at[15:17].set(dq_arm)
+                else:
+                    mj_data.qvel[6:8] = current_state[15:17]
+
+
+
+            sim_start = time.time()
+            # SBMPC步进
+            sim.step()
+            sim_end = time.time()
+            print(f"Sim step time: {(sim_end - sim_start)*1000:.2f} ms")
+
+
+
+            # 发送控制到真实机器人
+            if use_real is True:
+                send_torque_start = time.time()
+                if USING_WIFI_RASPI:
+                    sock.sendto(struct.pack("ffi", arm_torques[0], arm_torques[1], i), (raspi_ip, raspi_port))
+                else:
+                    real_controller.send_torque(arm_torques) #0.25ms
+                send_torque_end = time.time()
+                print(f"Send torque time: {(send_torque_end - send_torque_start)*1000:.2f} ms")
+            
+            # # 检查NaN
+            # if jnp.any(jnp.isnan(current_state)):
+            #     print(f"\n⚠️ NaN detected at step {i}!")
+            #     break
+
 
             if scenario['task_type'] == TaskType.TRAJECTORY:
                 # 对于轨迹任务，更新目标球到第一个路径点
@@ -994,7 +1046,7 @@ def run_with_visualization(sim, config, scenario):
             
             # 实时同步
             err_time = current_sim_time - (time.time() - start_time)
-            print(f"now time = {time.time()}, start_time = {start_time}, current_time = {current_sim_time}, err_time = {err_time*1000}ms")
+            # print(f"now time = {time.time()}, start_time = {start_time}, current_time = {current_sim_time}, err_time = {err_time*1000}ms")
             if err_time < 0:
                 print(f"⚠️ Warning: Simulation is lagging behind real time by {-err_time*1000}ms")
             else:
@@ -1874,3 +1926,8 @@ if __name__ == "__main__":
 
 
         # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
+        #192.168.0.172 Iot
+        #192.168.0.235 Hm-PC
+        #raspi_ip =  '192.168.0.206'
+        #env -u LD_LIBRARY_PATH python examples/quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
+        # ros2 run phasespace_client psnode
