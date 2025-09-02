@@ -953,7 +953,19 @@ def run_with_visualization(sim, config, scenario):
                 else:
                     mj_data.qpos[7:9] = real_state[0]
                     sim.state_traj[i+1, :][7:9] = real_state[0]
-                    sim.current_state.at[7:9].set(q_arm)
+                    sim.current_state = sim.current_state.at[7:9].set(q_arm)
+
+            # Add noise test
+            if i == 30 and False:
+                # 1) 修改 MuJoCo 内部速度
+                mj_data.qvel[6:8] = np.array([2.0, 0.0])
+
+                # 2) 修改仿真记录 —— 用 i+1 才会参与下一步积分
+                sim.state_traj[i+1, 15:17] = np.array([2.0, 0.0], dtype=np.float32)
+
+                # 3) 修改当前 JAX 状态；一定要“重新赋回”
+                sim.current_state = sim.current_state.at[15:17].set(jnp.array([2.0, 0.0], dtype=jnp.float32))
+
             
             mj_data.qvel[0:3] = current_state[9:12]
             mj_data.qvel[3:6] = current_state[12:15]
@@ -963,7 +975,7 @@ def run_with_visualization(sim, config, scenario):
                 else:
                     mj_data.qvel[6:8] = real_state[1]
                     sim.state_traj[i+1, :][15:17] = real_state[1]
-                    sim.current_state.at[15:17].set(dq_arm)
+                    sim.current_state = sim.current_state.at[15:17].set(dq_arm)
 
             if scenario['task_type'] == TaskType.TRAJECTORY:
                 # 对于轨迹任务，更新目标球到第一个路径点
