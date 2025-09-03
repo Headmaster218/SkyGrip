@@ -14,6 +14,8 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 import time
+import json
+import threading
 from enum import Enum
 import matplotlib.pyplot as plt
 from typing import Dict, Tuple, Optional
@@ -24,6 +26,9 @@ from sbmpc import BaseObjective
 import sbmpc.settings as settings
 from sbmpc.simulation import build_all
 from sbmpc.geometry import quat_product, quat2rotm, quat_inverse
+
+
+
 
 # 导入稳定的动力学模型
 from drone_arm_dynamics_stable import (
@@ -39,7 +44,8 @@ from drone_arm_dynamics_stable import (
 from task_configs import TaskConfig
 
 USING_ARM_POSITION = False
-USING_WIFI_RASPI = True
+USING_WIFI_RASPI = False
+USING_ROS2_PHASESPACE = True
 
 if USING_WIFI_RASPI:
     raspi_ip =  '192.168.0.206'
@@ -73,6 +79,30 @@ def recv_latest(sock, fmt="ffi", bufsize=1024):
 
     sock.setblocking(True)   # 恢复阻塞
     return newest
+
+
+if USING_ROS2_PHASESPACE:
+
+    sock2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock2.bind(("0.0.0.0", 5005))
+    sock2.setblocking(False)
+
+
+    def recv_latest_json(sock, bufsize=4096):
+        """
+        从UDP缓冲区读取所有JSON包，只返回time最大的那条
+        """
+        newest, max_time = None, -1
+        while True:
+            try:
+                data, addr = sock.recvfrom(bufsize)
+                msg = json.loads(data.decode())
+                if msg["time"] > max_time:
+                    max_time = msg["time"]
+                    newest = msg
+            except BlockingIOError:
+                break
+        return newest
 
 
 # ============================================================================
@@ -917,6 +947,16 @@ def run_test_with_diagnostics(scenario: Dict, dynamics_step: int = 1, visualize:
     
     return sim, results
 
+def quat_mul(a, b):
+    w1,x1,y1,z1 = a
+    w2,x2,y2,z2 = b
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2])
+
+
 def run_with_visualization(sim, config, scenario):
     """带MuJoCo可视化运行"""
     print("\nRunning with MuJoCo visualization...")
@@ -928,9 +968,9 @@ def run_with_visualization(sim, config, scenario):
     viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
     
     # 设置相机
-    viewer.cam.distance = 5.0
-    viewer.cam.elevation = -20
-    viewer.cam.azimuth = 45
+    viewer.cam.distance = 8.0
+    viewer.cam.elevation = -90
+    viewer.cam.azimuth = 0
 
     # 如果是末端执行器任务，更新目标球位置
     if scenario['task_type'] == TaskType.END_EFFECTOR_TRAJECTORY:
@@ -952,8 +992,33 @@ def run_with_visualization(sim, config, scenario):
             current_state = sim.state_traj[i, :]
             arm_torques = ctrl[4:6]
 
+            if USING_ROS2_PHASESPACE:
+                newest = recv_latest_json(sock2)
+                pos = quat = lin_vel = ang_vel = None
+                if newest:
+                    [x,z,y]  = np.asarray(newest["pos"], dtype=float) *0.001       # m
+                    pos = [x,-y,z]
+                    # print(f'{x:.2f} {-y:.2f} {z:.2f}')
 
-            # 获取真实机器人状态
+
+                    [w,x,y,z] = np.asarray(newest["quat"], dtype=float)       # [w,x,y,z]  
+                    q_fix = np.array([np.sqrt(2)/2, 0, 0, -np.sqrt(2)/2])
+                    quat = quat_mul([w,x,-z,y], q_fix)
+                    # print(f'{x:.2f} {y:.2f} {z:.2f}')  
+
+
+                    [x,z,y] = np.asarray(newest["lin_vel"], dtype=float) *0.001  # m/s
+                    lin_vel = [x,y,z]
+                    # print(f'{x:.2f} {y:.2f} {z:.2f}')
+
+
+                    [x,z,y] = np.asarray(newest["ang_vel"], dtype=float) # rad/s
+                    ang_vel = [x,-y,z]
+                    # print(f'{x:.2f} {y:.2f} {z:.2f}')
+
+
+
+            # 获取真实机器人ARM状态
             if use_real is True:
                 get_state_start = time.time()
                 if USING_WIFI_RASPI:
@@ -969,9 +1034,13 @@ def run_with_visualization(sim, config, scenario):
                 q_arm  = jnp.asarray(real_state[0], dtype=jnp.float32)  # 形状 (2,)
                 dq_arm = jnp.asarray(real_state[1], dtype=jnp.float32)  # 形状 (2,)
             
-            # 更新MuJoCo
-            mj_data.qpos[0:3] = current_state[0:3]
-            mj_data.qpos[3:7] = current_state[3:7]
+            if USING_ROS2_PHASESPACE and quat is not None:
+                mj_data.qpos[0:3] = pos
+                mj_data.qpos[3:7] = quat
+            else:
+                # 更新MuJoCo
+                mj_data.qpos[0:3] = current_state[0:3]
+                mj_data.qpos[3:7] = current_state[3:7]
             if mj_model.nq > 7:
                 if use_real is True:
                     mj_data.qpos[7:9] = real_state[0]
@@ -992,9 +1061,13 @@ def run_with_visualization(sim, config, scenario):
                 # 3) 修改当前 JAX 状态；一定要“重新赋回”
                 sim.current_state = sim.current_state.at[15:17].set(jnp.array([2.0, 0.0], dtype=jnp.float32))
 
-            
-            mj_data.qvel[0:3] = current_state[9:12]
-            mj_data.qvel[3:6] = current_state[12:15]
+            if USING_ROS2_PHASESPACE  and lin_vel is not None:
+                mj_data.qvel[0:3] = lin_vel
+                mj_data.qvel[3:6] = ang_vel
+            else:
+                # 更新MuJoCo
+                mj_data.qvel[0:3] = current_state[9:12]
+                mj_data.qvel[3:6] = current_state[12:15]
             if mj_model.nv > 6:
                 if use_real is True:
                     mj_data.qvel[6:8] = real_state[1]
@@ -1051,6 +1124,8 @@ def run_with_visualization(sim, config, scenario):
                 print(f"⚠️ Warning: Simulation is lagging behind real time by {-err_time*1000}ms")
             else:
                 time.sleep(err_time)
+
+            # time.sleep(0.1)
             
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
@@ -1903,13 +1978,13 @@ if __name__ == "__main__":
         if args.test == 'hover':
             scenario = TestScenario.hover_test()
         elif args.test == 'reach':
-            scenario = TestScenario.reach_point_test([1.0, 0.5, 2.0])
+            scenario = TestScenario.reach_point_test([1.0, 0.0, 2.0])
         elif args.test == 'arm':
             scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.5, 0.7])
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
-            ee_target = [1, 1, 2]  # 单个目标点
-            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=15.0)
+            ee_target = [1, 1, 1]  # 单个目标点
+            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=1500.0)
         elif args.test == 'trajectory':
             waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5], [0, 0, 1.5]]
             scenario = TestScenario.trajectory_test(waypoints, duration=10.0)
@@ -1926,8 +2001,8 @@ if __name__ == "__main__":
 
 
         # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
-        #192.168.0.172 Iot
-        #192.168.0.235 Hm-PC
-        #raspi_ip =  '192.168.0.206'
+        #192.168.0.172 Iot 5605
+        #192.168.0.235 Hm-PC 5605
+        #raspi_ip =  '192.168.0.206' 5606
         #env -u LD_LIBRARY_PATH python examples/quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
         # ros2 run phasespace_client psnode
