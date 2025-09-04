@@ -541,12 +541,12 @@ class AdaptiveObjective(BaseObjective):
 
         if USING_ARM_POSITION:
             # 1) 末端误差（远处中等，近处加大）——不归一化
-            ee_weight = jnp.where(ee_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
-            cost += ee_weight * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_err_norm**2, drone_err_norm**2))
+            # ee_weight = jnp.where(ee_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
+            cost += 30 * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_err_norm**2, drone_err_norm**2))
         else:
             # 1) 末端误差（远处中等，近处加大）——不归一化
-            ee_weight = jnp.where(drone_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
-            cost += ee_weight * jnp.sum(drone_err_norm**2)
+            # ee_weight = jnp.where(drone_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
+            cost += 30 * jnp.sum(drone_err_norm**2)
 
         # 2) 平动速度（抑制飘）
         cost += 8.0 * jnp.sum(vel**2)
@@ -1589,6 +1589,119 @@ def analyze_trajectory_results(sim, scenario, config):
         'std_error'  : float(errors.std())
     }
 
+def analyze_arm_control_results(sim, scenario, config):
+    """
+    飞机悬停 + 机械臂控制实验的结果分析：
+    1) 末端执行器位置误差
+    2) 关节角度跟踪误差
+    """
+
+    # ========== 0. 工具 ==========
+    def fk_end_effector(state):
+        pos  = state[0:3]
+        quat = state[3:7] / (np.linalg.norm(state[3:7]) + 1e-10)
+        q1, q2 = state[7], state[8]
+        return np.asarray(compute_end_effector_position(pos, quat, q1, q2))
+
+    # ========== 1. 真实轨迹 ==========
+    states_np = np.asarray(sim.state_traj)[:-1]        # (T,17) 与参考对齐
+    sim_steps = states_np.shape[0]
+    time_vec  = np.arange(sim_steps) * config.MPC.dt   # (T,)
+
+    ee_actual = np.vstack([fk_end_effector(s) for s in states_np])      # (T,3)
+    drone_actual = states_np[:, 0:3]
+    q_actual  = states_np[:, 7:9]                                        # (T,2)
+
+    # ========== 2. 参考轨迹 ==========
+    #   a) 优先 sim.const_reference
+    #   b) 其次 scenario["reference"] (自生成的 arm_swing_reference)
+    #   c) 最后 scenario["ee_waypoints"]（单点）或固定 0
+    if hasattr(sim, "const_reference"):
+        ref_full = np.asarray(sim.const_reference)[:, 0, :]  # (T,17)
+    elif "reference" in scenario:
+        ref_full = np.asarray(scenario["reference"])[:, 0, :]
+    else:
+        # 只给一个静态 ee_waypoints[0]
+        tgt = np.asarray(scenario.get("ee_waypoints", [[0., 0., 1.5]]))[0]
+        ref_full = np.tile(
+            np.concatenate([tgt, [1,0,0,0], np.zeros(10)]), (sim_steps,1)
+        )
+
+    ee_ref = ref_full[:sim_steps, 0:3]   # (T,3)
+    q_ref  = ref_full[:sim_steps, 7:9]   # (T,2)
+
+    # ========== 3. 误差 ==========
+    ee_err = ee_actual - ee_ref          # (T,3)
+    ee_norm = np.linalg.norm(ee_err, axis=1)
+    drone_norm = np.linalg.norm(drone_actual - ee_ref, axis=1)
+    q_err   = q_actual - q_ref
+    q_norm  = np.linalg.norm(q_err, axis=1)
+
+    # ----------- 打印统计 -----------
+    print("\n" + "="*70)
+    print("Arm-Control Tracking Results")
+    print("="*70)
+    print(f"末端位置误差 (m)")
+    print(f"  Final : {ee_norm[-1]:.4f}")
+    print(f"  Avg   : {ee_norm.mean():.4f}")
+    print(f"  Max   : {ee_norm.max():.4f}")
+    print(f"  Std   : {ee_norm.std():.4f}")
+    print(f"关节角误差 (rad)")
+    print(f"  Final : {q_norm[-1]:.4f}")
+    print(f"  Avg   : {q_norm.mean():.4f}")
+
+    # ========== 4. 绘图 ==========
+    fig = plt.figure(figsize=(14, 10))
+
+    # 4-1 末端 3-D 轨迹
+    ax3d = fig.add_subplot(221, projection='3d')
+    # ax3d.plot(ee_ref[:,0], ee_ref[:,1], ee_ref[:,2], 'r--', lw=2, label='EE Ref')
+    ax3d.plot(ee_actual[:,0], ee_actual[:,1], ee_actual[:,2], 'b-', lw=1.2, label='EE Actual')
+    ax3d.set_title('End-Effector 3-D Trajectory')
+    ax3d.set_xlabel('X [m]'); ax3d.set_ylabel('Y [m]'); ax3d.set_zlabel('Z [m]')
+    ax3d.set_xlim(-0.2, 0.2)   # X 轴范围
+    ax3d.set_ylim(-0.2, 0.2)   # Y 轴范围
+    ax3d.legend(); ax3d.grid(True)
+
+
+    # 4-2 XY 平面
+    ax_xy = fig.add_subplot(222)
+    ax_xy.plot(ee_ref[:,0], ee_ref[:,1], 'r--', label='Ref')
+    ax_xy.plot(ee_actual[:,0], ee_actual[:,1], 'b-', label='Actual')
+    ax_xy.set_xlabel('X [m]'); ax_xy.set_ylabel('Y [m]')
+    ax_xy.set_title('EE Trajectory in XY')
+    ax_xy.axis('equal'); ax_xy.grid(True); ax_xy.legend()
+
+    # 4-3 末端误差随时间
+    ax_err = fig.add_subplot(223)
+    ax_err.plot(time_vec, drone_norm, 'k', label='‖ee_err‖')
+    ax_err.axhline(0.05, color='g', ls='--', lw=0.8, label='5 cm')
+    ax_err.set_xlabel('Time [s]'); ax_err.set_ylabel('Error [m]')
+    ax_err.set_title('End-Effector Error')
+    ax_err.grid(True); ax_err.legend()
+
+    # 4-4 关节角度
+    ax_q = fig.add_subplot(224)
+    ax_q.plot(time_vec, q_actual[:,0], 'b',  label='q1 actual')
+    ax_q.plot(time_vec, q_actual[:,1], 'g',  label='q2 actual')
+    ax_q.plot(time_vec, q_ref[:,0],  'b--', label='q1 ref')
+    ax_q.plot(time_vec, q_ref[:,1],  'g--', label='q2 ref')
+    ax_q.set_xlabel('Time [s]'); ax_q.set_ylabel('Angle [rad]')
+    ax_q.set_title('Joint Angles')
+    ax_q.grid(True); ax_q.legend(ncol=2)
+
+    plt.tight_layout(); plt.show()
+
+    # ========== 5. 返回指标 ==========
+    return {
+        'ee_final' : float(ee_norm[-1]),
+        'ee_avg'   : float(ee_norm.mean()),
+        'ee_max'   : float(ee_norm.max()),
+        'ee_std'   : float(ee_norm.std()),
+        'q_final'  : float(q_norm[-1]),
+        'q_avg'    : float(q_norm.mean())
+    }
+
 
 def plot_results(sim, scenario, config):
     """绘制结果图表"""
@@ -1739,115 +1852,6 @@ def generate_end_effector_trajectory_reference(ee_waypoints, num_iters, horizon,
     return reference
 
 
-def analyze_arm_control_results(sim, scenario, config):
-    """
-    飞机悬停 + 机械臂控制实验的结果分析：
-    1) 末端执行器位置误差
-    2) 关节角度跟踪误差
-    """
-
-    # ========== 0. 工具 ==========
-    def fk_end_effector(state):
-        pos  = state[0:3]
-        quat = state[3:7] / (np.linalg.norm(state[3:7]) + 1e-10)
-        q1, q2 = state[7], state[8]
-        return np.asarray(compute_end_effector_position(pos, quat, q1, q2))
-
-    # ========== 1. 真实轨迹 ==========
-    states_np = np.asarray(sim.state_traj)[:-1]        # (T,17) 与参考对齐
-    sim_steps = states_np.shape[0]
-    time_vec  = np.arange(sim_steps) * config.MPC.dt   # (T,)
-
-    ee_actual = np.vstack([fk_end_effector(s) for s in states_np])      # (T,3)
-    drone_actual = states_np[:, 0:3]
-    q_actual  = states_np[:, 7:9]                                        # (T,2)
-
-    # ========== 2. 参考轨迹 ==========
-    #   a) 优先 sim.const_reference
-    #   b) 其次 scenario["reference"] (自生成的 arm_swing_reference)
-    #   c) 最后 scenario["ee_waypoints"]（单点）或固定 0
-    if hasattr(sim, "const_reference"):
-        ref_full = np.asarray(sim.const_reference)[:, 0, :]  # (T,17)
-    elif "reference" in scenario:
-        ref_full = np.asarray(scenario["reference"])[:, 0, :]
-    else:
-        # 只给一个静态 ee_waypoints[0]
-        tgt = np.asarray(scenario.get("ee_waypoints", [[0., 0., 1.5]]))[0]
-        ref_full = np.tile(
-            np.concatenate([tgt, [1,0,0,0], np.zeros(10)]), (sim_steps,1)
-        )
-
-    ee_ref = ref_full[:sim_steps, 0:3]   # (T,3)
-    q_ref  = ref_full[:sim_steps, 7:9]   # (T,2)
-
-    # ========== 3. 误差 ==========
-    ee_err = ee_actual - ee_ref          # (T,3)
-    ee_norm = np.linalg.norm(ee_err, axis=1)
-    drone_norm = np.linalg.norm(drone_actual - ee_ref, axis=1)
-    q_err   = q_actual - q_ref
-    q_norm  = np.linalg.norm(q_err, axis=1)
-
-    # ----------- 打印统计 -----------
-    print("\n" + "="*70)
-    print("Arm-Control Tracking Results")
-    print("="*70)
-    print(f"末端位置误差 (m)")
-    print(f"  Final : {ee_norm[-1]:.4f}")
-    print(f"  Avg   : {ee_norm.mean():.4f}")
-    print(f"  Max   : {ee_norm.max():.4f}")
-    print(f"  Std   : {ee_norm.std():.4f}")
-    print(f"关节角误差 (rad)")
-    print(f"  Final : {q_norm[-1]:.4f}")
-    print(f"  Avg   : {q_norm.mean():.4f}")
-
-    # ========== 4. 绘图 ==========
-    fig = plt.figure(figsize=(14, 10))
-
-    # 4-1 末端 3-D 轨迹
-    ax3d = fig.add_subplot(221, projection='3d')
-    # ax3d.plot(ee_ref[:,0], ee_ref[:,1], ee_ref[:,2], 'r--', lw=2, label='EE Ref')
-    ax3d.plot(ee_actual[:,0], ee_actual[:,1], ee_actual[:,2], 'b-', lw=1.2, label='EE Actual')
-    ax3d.set_title('End-Effector 3-D Trajectory')
-    ax3d.set_xlabel('X [m]'); ax3d.set_ylabel('Y [m]'); ax3d.set_zlabel('Z [m]')
-    ax3d.legend(); ax3d.grid(True)
-
-    # 4-2 XY 平面
-    ax_xy = fig.add_subplot(222)
-    ax_xy.plot(ee_ref[:,0], ee_ref[:,1], 'r--', label='Ref')
-    ax_xy.plot(ee_actual[:,0], ee_actual[:,1], 'b-', label='Actual')
-    ax_xy.set_xlabel('X [m]'); ax_xy.set_ylabel('Y [m]')
-    ax_xy.set_title('EE Trajectory in XY')
-    ax_xy.axis('equal'); ax_xy.grid(True); ax_xy.legend()
-
-    # 4-3 末端误差随时间
-    ax_err = fig.add_subplot(223)
-    ax_err.plot(time_vec, drone_norm, 'k', label='‖ee_err‖')
-    ax_err.axhline(0.05, color='g', ls='--', lw=0.8, label='5 cm')
-    ax_err.set_xlabel('Time [s]'); ax_err.set_ylabel('Error [m]')
-    ax_err.set_title('End-Effector Error')
-    ax_err.grid(True); ax_err.legend()
-
-    # 4-4 关节角度
-    ax_q = fig.add_subplot(224)
-    ax_q.plot(time_vec, q_actual[:,0], 'b',  label='q1 actual')
-    ax_q.plot(time_vec, q_actual[:,1], 'g',  label='q2 actual')
-    ax_q.plot(time_vec, q_ref[:,0],  'b--', label='q1 ref')
-    ax_q.plot(time_vec, q_ref[:,1],  'g--', label='q2 ref')
-    ax_q.set_xlabel('Time [s]'); ax_q.set_ylabel('Angle [rad]')
-    ax_q.set_title('Joint Angles')
-    ax_q.grid(True); ax_q.legend(ncol=2)
-
-    plt.tight_layout(); plt.show()
-
-    # ========== 5. 返回指标 ==========
-    return {
-        'ee_final' : float(ee_norm[-1]),
-        'ee_avg'   : float(ee_norm.mean()),
-        'ee_max'   : float(ee_norm.max()),
-        'ee_std'   : float(ee_norm.std()),
-        'q_final'  : float(q_norm[-1]),
-        'q_avg'    : float(q_norm.mean())
-    }
 
 # ------------------------------------------------------------------
 # 机械臂周期摆动参考：飞机坐标系不动，关节 q1,q2 = A·sin(ωt+φ)
