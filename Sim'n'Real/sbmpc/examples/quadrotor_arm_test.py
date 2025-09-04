@@ -1018,7 +1018,7 @@ def run_with_visualization(sim, config, scenario):
 
 
 
-            # 获取真实机器人ARM状态
+            # Get real arm state
             if use_real is True:
                 get_state_start = time.time()
                 if USING_WIFI_RASPI:
@@ -1026,7 +1026,7 @@ def run_with_visualization(sim, config, scenario):
                     if values is not None:
                         real_state = [list(values[:2]), list(values[2:4])]
                     else:
-                        real_state = current_state[0:3]
+                        real_state = [current_state[7:9], current_state[15:17]]
                 else:
                     real_state = real_controller.get_joint_state()
                 get_state_end = time.time()
@@ -1034,6 +1034,7 @@ def run_with_visualization(sim, config, scenario):
                 q_arm  = jnp.asarray(real_state[0], dtype=jnp.float32)  # 形状 (2,)
                 dq_arm = jnp.asarray(real_state[1], dtype=jnp.float32)  # 形状 (2,)
             
+            # Get real Phasespace state
             if USING_ROS2_PHASESPACE and quat is not None:
                 mj_data.qpos[0:3] = pos
                 mj_data.qpos[3:7] = quat
@@ -1041,6 +1042,7 @@ def run_with_visualization(sim, config, scenario):
                 # 更新MuJoCo
                 mj_data.qpos[0:3] = current_state[0:3]
                 mj_data.qpos[3:7] = current_state[3:7]
+
             if mj_model.nq > 7:
                 if use_real is True:
                     mj_data.qpos[7:9] = real_state[0]
@@ -1111,7 +1113,8 @@ def run_with_visualization(sim, config, scenario):
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
             mj_end = time.time()
-            print(f"Mujoco step time: {(mj_end - mj_start)*1000:.2f} ms")
+
+            # print(f"Mujoco step time: {(mj_end - mj_start)*1000:.2f} ms")
             
             # 定期打印状态
             current_sim_time = i * config.MPC.dt
