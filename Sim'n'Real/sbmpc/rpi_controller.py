@@ -3,7 +3,8 @@ import socket
 import numpy as np
 import struct
 
-host_ip =  '192.168.0.235'
+host_ip =  '192.168.0.172' #IoT
+# host_ip =  '192.168.0.235' #Hm-PC
 host_port = 5605
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(("0.0.0.0", 5606))   # 监听本机 5005 端口
@@ -88,6 +89,37 @@ class RealRobotController:
         # 当前模式缓存（ID → mode），mode：0=PWM, 1=Current, 3=Position 等
         self.current_mode_map = {dxl_id: None for dxl_id in self.DXL_IDS}
         self.pwmgroupWrite = GroupSyncWrite(self.portHandler, self.packetHandler, 100, 2)
+
+    def _init_groups(self):
+        # 抽出来，便于重连后复用
+        self.groupSyncWrite = GroupSyncWrite(
+            self.portHandler, self.packetHandler, self.ADDR_GOAL_POSITION, self.LEN_GOAL_POSITION
+        )
+        self.groupSyncRead = GroupSyncRead(
+            self.portHandler, self.packetHandler, self.ADDR_PRESENT_VELOCITY, 8
+        )
+        for dxl_id in self.DXL_IDS:
+            self.groupSyncRead.addParam(dxl_id)
+        self.current_mode_map = {dxl_id: None for dxl_id in self.DXL_IDS}
+        self.pwmgroupWrite = GroupSyncWrite(self.portHandler, self.packetHandler, 100, 2)
+
+    def _reconnect(self, retry_delay=1.0, max_try=10):
+        """关闭端口并重连，返回是否成功"""
+        try:
+            self.portHandler.closePort()
+        except Exception:
+            pass
+        for k in range(max_try):
+            try:
+                if self.portHandler.openPort() and self.portHandler.setBaudRate(self.BAUDRATE):
+                    self._init_groups()
+                    print(f"✅ 串口重连成功（第{ k+1 }次）")
+                    return True
+            except Exception as e:
+                print("重连异常：", e)
+            time.sleep(retry_delay)
+        print("❌ 串口重连失败")
+        return False
 
 
     def _set_control_mode_if_needed(self, dxl_id, target_mode):
@@ -226,6 +258,8 @@ class RealRobotController:
         # 一次性请求
         dxl_comm_result = self.groupSyncRead.txRxPacket()
         if dxl_comm_result != COMM_SUCCESS:
+            if self._reconnect():
+                return self.get_joint_state()   # 重试一次
             print("SyncRead failed:", self.packetHandler.getTxRxResult(dxl_comm_result))
             return [0.0]*len(self.DXL_IDS), [0.0]*len(self.DXL_IDS)
 
@@ -260,11 +294,24 @@ real_controller = RealRobotController( device_name='/dev/ttyUSB0' )
 
 i = 0
 
+miss_count = 0  # 连续未收到消息的次数
+
 while True:
-	i+=1
-	qpos, qvel = real_controller.get_joint_state()
-	sock.sendto(struct.pack("ffffi", qpos[0], qpos[1], qvel[0], qvel[1], i), (host_ip, host_port))
-	values = recv_latest(sock, "ffi")
-	if values is not None:
-		real_controller.send_torque([values[0],values[1]])
-		print('success control'+str(i))
+    i += 1
+    qpos, qvel = real_controller.get_joint_state()
+    sock.sendto(struct.pack("ffffi", qpos[0], qpos[1], qvel[0], qvel[1], i), (host_ip, host_port))
+
+    values = recv_latest(sock, "ffi")
+    if values is not None:
+        # 收到消息，正常控制
+        real_controller.send_torque([values[0], values[1]])
+        miss_count = 0  # 重置未收到计数
+        print('success control ' + str(i))
+    else:
+        # 没收到消息
+        miss_count += 1
+        print("No command for {miss_count} cycles, torque set to 0")
+        if miss_count >= 500:
+            real_controller.send_torque([0.0, 0.0])  # 停止两个电机
+            print("No command for 500 cycles, torque set to 0")
+
