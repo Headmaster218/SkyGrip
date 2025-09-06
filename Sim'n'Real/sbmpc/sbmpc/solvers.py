@@ -243,40 +243,52 @@ class Controller:
         self.sampler = sampler
         self.gains_obj = gains_obj
            
-    def command(self, state, reference, iteration, shift_guess=True, num_steps=1):
 
+    def command(self, state, reference, iteration, shift_guess=True, num_steps=1):
         optimal_samples = self.sampler.optimal_samples
         gains = self.gains_obj.cur_gains
 
         for i in range(num_steps):
+            # 1) 每轮先更新 RNG key（不依赖分支）
+            self.sampler._update_key()  # 或者用你 sampler 内部的 next_key() 接口
+
+            # 2) 采样
             samples_delta = self.sampler.sample_input_sequence(self.sampler.master_key)
+
+            # 3) rollout：注意 do_rollout 的约定，通常是用 (optimal_samples + samples_delta) 去仿真
             samples, costs, gradients = self.rollout_gen.do_rollout(
                 state, reference, optimal_samples, samples_delta, iteration
             )
 
-            # ===== 在这里分支 =====
-            if False:  
-                # 随机射击：只取最优轨迹
+            # ===== 分支 =====
+            if False:
+                # 随机射击：取单条最优
                 best = jnp.argmin(costs)
                 optimal_samples = samples[best]
-            elif False:
-                elite = jnp.argsort(costs)[:10]            # M=5 或 10
-                optimal_samples = jnp.mean(samples[elite], axis=0)
-            else:  # 默认 MPPI
+
+            if 1 == 2:
+                best = jnp.argmin(costs)
+                delta = samples[best]                     # 注意：samples 是 delta
+                optimal_samples = self.rollout_gen.clip_input_single(optimal_samples + delta)
+            elif 1 == 2:
+                M = 80
+                elite = jnp.argsort(costs)[:M]
+                delta = jnp.mean(samples[elite], axis=0)  # 平均扰动
+                optimal_samples = self.rollout_gen.clip_input_single(optimal_samples + delta)
+            else:
                 optimal_samples = self.sampler.update(optimal_samples, samples, costs)
 
-            # update gains (RS 不用梯度更新也无所谓，保留即可)
+            # 4) 更新 gains（保留即可）
             self.gains_obj.cur_gains = self.gains_obj.gains_computation(costs, samples, gradients)
 
-        # update sampler best control vars
+        # 5) 更新 sampler 的“最佳猜测”（供下一次 command 用）
         if shift_guess:
             self.sampler.optimal_samples = self._shift_guess(optimal_samples)
         else:
             self.sampler.optimal_samples = optimal_samples
 
         return optimal_samples
-
-    
+        
 
     @partial(jax.jit, static_argnums=(0,))
     def _shift_guess(self, optimal_samples):
