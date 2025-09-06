@@ -93,10 +93,10 @@ def plot_group(runs, title="Group Plot"):
         errors = np.linalg.norm(act[:T] - base_ref[:T], axis=1)
         ax_err.plot(t[:T], errors, label=label)
     ax_err.axhline(0.05, ls="--", lw=0.8, label="5 cm")
-    ax_err.axhline(0.10, ls="--", lw=0.8, label="10 cm")
+    # ax_err.axhline(0.10, ls="--", lw=0.8, label="10 cm")
     ax_err.set_title("Tracking Error"); ax_err.set_xlabel("Time [s]"); ax_err.set_ylabel("Error [m]")
     ax_err.legend(); ax_err.grid(True)
-    ax_err.set_ylim(-0.01, 0.11)
+    ax_err.set_ylim(-0.01, 0.06)
 
     # 4) 分量对比（实际）
     ax_pos = fig.add_subplot(144)
