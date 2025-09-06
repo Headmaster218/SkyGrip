@@ -261,19 +261,14 @@ class Controller:
             )
 
             # ===== 分支 =====
-            if False:
-                # 随机射击：取单条最优
-                best = jnp.argmin(costs)
-                optimal_samples = samples[best]
-
             if 1 == 2:
-                best = jnp.argmin(costs)
+                best = jnp.argmin(costs) #RS-MPC
                 delta = samples[best]                     # 注意：samples 是 delta
                 optimal_samples = self.rollout_gen.clip_input_single(optimal_samples + delta)
             elif 1 == 2:
                 M = 80
                 elite = jnp.argsort(costs)[:M]
-                delta = jnp.mean(samples[elite], axis=0)  # 平均扰动
+                delta = jnp.mean(samples[elite], axis=0)  # 平均扰动Myopic
                 optimal_samples = self.rollout_gen.clip_input_single(optimal_samples + delta)
             else:
                 optimal_samples = self.sampler.update(optimal_samples, samples, costs)
