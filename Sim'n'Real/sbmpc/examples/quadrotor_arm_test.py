@@ -540,13 +540,8 @@ class AdaptiveObjective(BaseObjective):
         drone_err_norm = jnp.linalg.norm(drone_error)
 
         if USING_ARM_POSITION:
-            # 1) 末端误差（远处中等，近处加大）——不归一化
-            # ee_weight = jnp.where(ee_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
-            # cost += 300 * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_err_norm**2, ee_err_norm**2))
             cost += 300 * jnp.sum(ee_err_norm**2)
         else:
-            # 1) 末端误差（远处中等，近处加大）——不归一化
-            # ee_weight = jnp.where(drone_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
             cost += 300 * jnp.sum(drone_err_norm**2)
 
         # 2) 平动速度（抑制飘）
