@@ -20,6 +20,7 @@ from enum import Enum
 import matplotlib.pyplot as plt
 from typing import Dict, Tuple, Optional
 from dynamixel_sdk import *  # Dynamixel SDK
+from scipy.spatial.transform import Rotation as R
 
 
 from sbmpc import BaseObjective
@@ -43,9 +44,10 @@ from drone_arm_dynamics_stable import (
 # 导入任务配置
 from task_configs import TaskConfig
 
-USING_ARM_POSITION = False
+USING_ARM_POSITION = True
+
 USING_WIFI_RASPI = False
-USING_ROS2_PHASESPACE = True
+USING_ROS2_PHASESPACE = False
 
 if USING_WIFI_RASPI:
     raspi_ip =  '192.168.0.206'
@@ -540,12 +542,17 @@ class AdaptiveObjective(BaseObjective):
         drone_err_norm = jnp.linalg.norm(drone_error)
 
         if USING_ARM_POSITION:
+            # 1) 末端误差（远处中等，近处加大）——不归一化
+            # ee_weight = jnp.where(ee_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
+            # cost += 300 * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_err_norm**2, ee_err_norm**2))
             cost += 300 * jnp.sum(ee_err_norm**2)
         else:
+            # 1) 末端误差（远处中等，近处加大）——不归一化
+            # ee_weight = jnp.where(drone_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
             cost += 300 * jnp.sum(drone_err_norm**2)
 
         # 2) 平动速度（抑制飘）
-        cost += 3.0 * jnp.sum(vel**2)
+        cost += 1.0 * jnp.sum(vel**2)
 
         # 3) 角速度（防晃）
         cost += 3.0 * jnp.sum(omega**2)
@@ -560,11 +567,11 @@ class AdaptiveObjective(BaseObjective):
 
         # 6) 输入正则（能量项）
         thrust_diff = inputs[0] - MASS_TOTAL * GRAVITY
-        cost += 0.15 * (thrust_diff**2)         # 推力偏离悬停
+        cost += 0.05 * (thrust_diff**2)         # 推力偏离悬停
         cost += 0.40 * jnp.sum(inputs[1:4]**2)  # 机体扭矩
         cost += 5.00 * jnp.sum(inputs[4:6]**2)  # 关节扭矩
 
-        if True:
+        if False:
             cost += 150.0 * jnp.abs(q_joints[0] - reference[7])
             cost += 150.0 * jnp.abs(q_joints[1] - reference[8])
 
@@ -730,7 +737,7 @@ class TestScenario:
             'duration': duration
         }
 
-
+this_task_config = None
 # ============================================================================
 # 主测试函数
 # ============================================================================
@@ -795,6 +802,7 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
     task_config = TaskConfig.get_config_for_task(
         scenario['task_type'].value, dynamics_step
     )
+    task_config = this_task_config
 
     # 根据设备类型调整参数
     if DEVICE_TYPE == 'cpu':
@@ -929,17 +937,17 @@ def run_test_with_diagnostics(scenario: Dict, dynamics_step: int = 1, visualize:
     sim, results = run_test(scenario, dynamics_step, visualize)
     
     # 添加诊断
-    gains = diagnose_controller(sim, scenario)
+    # gains = diagnose_controller(sim, scenario)
     
-    # 如果增益为零，提供修复建议
-    if gains is not None and np.linalg.norm(gains) < 1e-6:
-        print("\n" + "="*70)
-        print("SUGGESTED FIXES:")
-        print("="*70)
-        print("1. Check if sensitivity computation in RolloutGenerator is working")
-        print("2. Verify that gains computation in MPPIGain is correct")
-        print("3. Try increasing the noise levels to get better gradient estimates")
-        print("4. Consider using finite differences for sensitivity if automatic differentiation fails")
+    # # 如果增益为零，提供修复建议
+    # if gains is not None and np.linalg.norm(gains) < 1e-6:
+    #     print("\n" + "="*70)
+    #     print("SUGGESTED FIXES:")
+    #     print("="*70)
+    #     print("1. Check if sensitivity computation in RolloutGenerator is working")
+    #     print("2. Verify that gains computation in MPPIGain is correct")
+    #     print("3. Try increasing the noise levels to get better gradient estimates")
+    #     print("4. Consider using finite differences for sensitivity if automatic differentiation fails")
     
     return sim, results
 
@@ -961,12 +969,12 @@ def run_with_visualization(sim, config, scenario):
     
     mj_model = mujoco.MjModel.from_xml_path("examples/drone_direct_control.xml")
     mj_data = mujoco.MjData(mj_model)
-    viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+    # viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
     
-    # 设置相机
-    viewer.cam.distance = 8.0
-    viewer.cam.elevation = -90
-    viewer.cam.azimuth = 0
+    # # 设置相机
+    # viewer.cam.distance = 8.0
+    # viewer.cam.elevation = -90
+    # viewer.cam.azimuth = 0
 
     # 如果是末端执行器任务，更新目标球位置
     if scenario['task_type'] == TaskType.END_EFFECTOR_TRAJECTORY:
@@ -994,23 +1002,23 @@ def run_with_visualization(sim, config, scenario):
                 if newest:
                     [x,z,y]  = np.asarray(newest["pos"], dtype=float) *0.001       # m
                     pos = [x,-y,z]
-                    # print(f'{x:.2f} {-y:.2f} {z:.2f}')
+                    print(f'{x:.2f} {-y:.2f} {z:.2f}')
 
 
                     [w,x,y,z] = np.asarray(newest["quat"], dtype=float)       # [w,x,y,z]  
                     q_fix = np.array([np.sqrt(2)/2, 0, 0, -np.sqrt(2)/2])
                     quat = quat_mul([w,x,-z,y], q_fix)
-                    # print(f'{x:.2f} {y:.2f} {z:.2f}')  
+                    print(f'{x:.2f} {y:.2f} {z:.2f}')  
 
 
                     [x,z,y] = np.asarray(newest["lin_vel"], dtype=float) *0.001  # m/s
                     lin_vel = [x,y,z]
-                    # print(f'{x:.2f} {y:.2f} {z:.2f}')
+                    print(f'{x:.2f} {y:.2f} {z:.2f}')
 
 
                     [x,z,y] = np.asarray(newest["ang_vel"], dtype=float) # rad/s
                     ang_vel = [x,-y,z]
-                    # print(f'{x:.2f} {y:.2f} {z:.2f}')
+                    print(f'{x:.2f} {y:.2f} {z:.2f}')
 
 
 
@@ -1080,7 +1088,7 @@ def run_with_visualization(sim, config, scenario):
             # SBMPC步进
             sim.step()
             sim_end = time.time()
-            print(f"Sim step time: {(sim_end - sim_start)*1000:.2f} ms")
+            # print(f"Sim step time: {(sim_end - sim_start)*1000:.2f} ms")
 
 
 
@@ -1106,8 +1114,8 @@ def run_with_visualization(sim, config, scenario):
                 mj_data.mocap_pos[1] = target_ee_pos
             
             mj_start = time.time()
-            mujoco.mj_forward(mj_model, mj_data)
-            viewer.sync()
+            # mujoco.mj_forward(mj_model, mj_data)
+            # viewer.sync()
             mj_end = time.time()
 
             # print(f"Mujoco step time: {(mj_end - mj_start)*1000:.2f} ms")
@@ -1117,19 +1125,19 @@ def run_with_visualization(sim, config, scenario):
 
             
             # 实时同步
-            err_time = current_sim_time - (time.time() - start_time)
-            # print(f"now time = {time.time()}, start_time = {start_time}, current_time = {current_sim_time}, err_time = {err_time*1000}ms")
-            if err_time < 0:
-                print(f"⚠️ Warning: Simulation is lagging behind real time by {-err_time*1000}ms")
-            else:
-                time.sleep(err_time)
+            # err_time = current_sim_time - (time.time() - start_time)
+            # # print(f"now time = {time.time()}, start_time = {start_time}, current_time = {current_sim_time}, err_time = {err_time*1000}ms")
+            # if err_time < 0:
+            #     print(f"⚠️ Warning: Simulation is lagging behind real time by {-err_time*1000}ms")
+            # else:
+            #     time.sleep(err_time)
 
             # time.sleep(0.1)
             
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
     finally:
-        viewer.close()
+        # viewer.close()
         if use_real is True and USING_WIFI_RASPI is False:
             real_controller.send_torque([0.0,0.0])
 
@@ -1515,6 +1523,17 @@ def analyze_trajectory_results(sim, scenario, config):
             ref_pos[:, k] = np.interp(time_vec, seg_times, waypoints[:, k])
     else:
         raise ValueError("无法在 scenario / sim 中找到参考轨迹！")
+    
+    # ---------- 3. 保存轨迹 ----------
+    save_name = f"EE_Square_{this_task_config['horizon']}_{this_task_config['samples']}.npz"
+    np.savez(
+        save_name,
+        time=time_vec,       # (T,)
+        actual_pos=actual_pos,  # (T,3)
+        ref_pos=ref_pos        # (T,3)
+    )
+    print(f"轨迹已保存到 {save_name}")
+
 
     # ---------- 3. 误差统计 ----------
     errors = np.linalg.norm(actual_pos - ref_pos, axis=1)      # (T,)
@@ -1526,14 +1545,14 @@ def analyze_trajectory_results(sim, scenario, config):
     print(f"  Std-dev error : {errors.std():.4f} m")
 
     # ---------- 4. 绘图 ----------
-    fig = plt.figure(figsize=(30, 10))
+    fig = plt.figure(figsize=(18, 5))  # 推荐用 constrained_layout
 
     # ---- 4-1 3-D 轨迹 ----
     ax3d = fig.add_subplot(141, projection='3d')
     ax3d.plot(ref_pos[:, 0], ref_pos[:, 1], ref_pos[:, 2],
-              'r--',  linewidth=2, label='Reference')
+            'r--',  linewidth=2, label='Reference')
     ax3d.plot(actual_pos[:, 0], actual_pos[:, 1], actual_pos[:, 2],
-              'b-',  linewidth=1.2, label='Actual')
+            'b-',  linewidth=1.2, label='Actual')
     ax3d.set_title('3-D Trajectory')
     ax3d.set_xlabel('X [m]')
     ax3d.set_ylabel('Y [m]')
@@ -1577,8 +1596,13 @@ def analyze_trajectory_results(sim, scenario, config):
     ax_pos.legend(ncol=2)
     ax_pos.grid(True)
 
-    plt.tight_layout()
-    plt.show()
+    # ---- 总标题 ----
+    fig.suptitle("Trajectory Tracking Results", fontsize=18, y=0.98)
+    plt.subplots_adjust(top=0.87, wspace=0.27, hspace=0.4, bottom = 0.1, left= 0, right= 0.98)
+
+
+    # plt.show()
+
 
     # ---------- 5. 结果 dict ----------
     return {
@@ -1650,7 +1674,7 @@ def analyze_arm_control_results(sim, scenario, config):
     print(f"  Avg   : {q_norm.mean():.4f}")
 
     # ========== 4. 绘图 ==========
-    fig = plt.figure(figsize=(14, 10))
+    fig = plt.figure(figsize=(10, 2))
 
     # 4-1 末端 3-D 轨迹
     ax3d = fig.add_subplot(221, projection='3d')
@@ -1990,19 +2014,43 @@ if __name__ == "__main__":
         elif args.test == 'ee_trajectory':
             # 定义末端执行器目标轨迹
             ee_target = [1, 1, 1]  # 单个目标点
-            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=1500.0)
+            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=800.0)
         elif args.test == 'trajectory':
-            waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5], [0, 0, 1.5]]
-            scenario = TestScenario.trajectory_test(waypoints, duration=10.0)
+            waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
+            scenario = TestScenario.trajectory_test(waypoints, duration=20.0)
         elif args.test == 'hover_n_arm':
             scenario = TestScenario.arm_swing_test(duration=10.0,
                                            amp_deg=(30,30),
                                            freq_hz=(0.3,0.3))
         
-        sim, results = run_test_with_diagnostics(scenario, args.step, args.visualize)
+        # Horizon = [80,60,40,30]
+        # samples = [8,32,128,512,2048,5000]
+
+        Horizon = [80]
+        samples = [5000]
+
+        for h in Horizon:
+            for s in samples:
+                this_task_config = {
+                                        'dt': 0.018,
+                                        'horizon':h,
+                                        'samples': s,    
+                                        'lambda': 0.7,      
+                                        'noise': jnp.array([
+                                            1.6,    # 减少推力噪声
+                                            0.6,    # 减少X扭矩（避免过冲）
+                                            0.7,    # 保持Y150ms
+                                            0.3,    # Z很好
+                                            0.6,    # 平衡的关节噪声
+                                            0.2   
+                                        ])
+                                    }
+                
+
+                sim, results = run_test_with_diagnostics(scenario, args.step, args.visualize)
         
-        if args.plot:
-            plot_results(sim, scenario, None)
+        # if args.plot:
+        #     plot_results(sim, scenario, None)
         
 
 
