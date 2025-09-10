@@ -912,11 +912,8 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
         obstacles=False
     )
     
-    # 9. 运行仿真
-    if visualize:
-        run_with_visualization(sim, config, scenario)
-    else:
-        run_headless(sim, config, scenario)
+    run_with_visualization(sim, config, scenario)
+
     
     # 10. 分析结果
     if scenario['task_type'] == TaskType.END_EFFECTOR_TRAJECTORY:
@@ -969,12 +966,12 @@ def run_with_visualization(sim, config, scenario):
     
     mj_model = mujoco.MjModel.from_xml_path("examples/drone_direct_control.xml")
     mj_data = mujoco.MjData(mj_model)
-    # viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+    viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
     
-    # # 设置相机
-    # viewer.cam.distance = 8.0
-    # viewer.cam.elevation = -90
-    # viewer.cam.azimuth = 0
+    # 设置相机
+    viewer.cam.distance = 8.0
+    viewer.cam.elevation = -90
+    viewer.cam.azimuth = 0
 
     # 如果是末端执行器任务，更新目标球位置
     if scenario['task_type'] == TaskType.END_EFFECTOR_TRAJECTORY:
@@ -1114,8 +1111,8 @@ def run_with_visualization(sim, config, scenario):
                 mj_data.mocap_pos[1] = target_ee_pos
             
             mj_start = time.time()
-            # mujoco.mj_forward(mj_model, mj_data)
-            # viewer.sync()
+            mujoco.mj_forward(mj_model, mj_data)
+            viewer.sync()
             mj_end = time.time()
 
             # print(f"Mujoco step time: {(mj_end - mj_start)*1000:.2f} ms")
@@ -1125,12 +1122,12 @@ def run_with_visualization(sim, config, scenario):
 
             
             # 实时同步
-            # err_time = current_sim_time - (time.time() - start_time)
-            # # print(f"now time = {time.time()}, start_time = {start_time}, current_time = {current_sim_time}, err_time = {err_time*1000}ms")
-            # if err_time < 0:
-            #     print(f"⚠️ Warning: Simulation is lagging behind real time by {-err_time*1000}ms")
-            # else:
-            #     time.sleep(err_time)
+            err_time = current_sim_time - (time.time() - start_time)
+            # print(f"now time = {time.time()}, start_time = {start_time}, current_time = {current_sim_time}, err_time = {err_time*1000}ms")
+            if err_time < 0:
+                print(f"⚠️ Warning: Simulation is lagging behind real time by {-err_time*1000}ms")
+            else:
+                time.sleep(err_time)
 
             # time.sleep(0.1)
             
