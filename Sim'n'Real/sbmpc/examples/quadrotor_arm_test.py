@@ -15,12 +15,11 @@ import mujoco
 import mujoco.viewer
 import time
 import json
-import threading
 from enum import Enum
 import matplotlib.pyplot as plt
 from typing import Dict, Tuple, Optional
 from dynamixel_sdk import *  # Dynamixel SDK
-from scipy.spatial.transform import Rotation as R
+from mpl_toolkits.mplot3d import Axes3D   # noqa: F401  # 激活 3-D 支持
 
 
 from sbmpc import BaseObjective
@@ -41,13 +40,11 @@ from drone_arm_dynamics_stable import (
     compute_end_effector_position
 )
 
-# 导入任务配置
-from task_configs import TaskConfig
-
-USING_ARM_POSITION = True
+USING_ARM_POSITION = False
 
 USING_WIFI_RASPI = False
 USING_ROS2_PHASESPACE = False
+USING_USB_SERIAL_SERVO = False
 
 if USING_WIFI_RASPI:
     raspi_ip =  '192.168.0.206'
@@ -55,32 +52,32 @@ if USING_WIFI_RASPI:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", 5605))   # 监听本机 5005 端口
 
-def recv_latest(sock, fmt="ffi", bufsize=1024):
-    """
-    从UDP缓冲区取出所有数据，只返回 i 最大的那条
-    :param sock: 已经 bind 的 UDP socket
-    :param fmt: struct 格式串，默认 "ffi" (float, float, int)
-    :param bufsize: 单个 UDP 包最大字节数
-    :return: (unpacked_data, addr) 或 None
-    """
-    size = struct.calcsize(fmt)
-    newest = None
-    max_i = -float("inf")
+    def recv_latest_UDP(sock, fmt="ffi", bufsize=1024):
+        """
+        从UDP缓冲区取出所有数据，只返回 i 最大的那条
+        :param sock: 已经 bind 的 UDP socket
+        :param fmt: struct 格式串，默认 "ffi" (float, float, int)
+        :param bufsize: 单个 UDP 包最大字节数
+        :return: (unpacked_data, addr) 或 None
+        """
+        size = struct.calcsize(fmt)
+        newest = None
+        max_i = -float("inf")
 
-    sock.setblocking(False)  # 设置非阻塞
-    while True:
-        try:
-            data, addr = sock.recvfrom(bufsize)
-            values = struct.unpack(fmt, data[:size])
-            *others, i = values
-            if i > max_i:
-                max_i = i
-                newest = values
-        except BlockingIOError:
-            break  # 缓冲区已空
+        sock.setblocking(False)  # 设置非阻塞
+        while True:
+            try:
+                data, addr = sock.recvfrom(bufsize)
+                values = struct.unpack(fmt, data[:size])
+                *others, i = values
+                if i > max_i:
+                    max_i = i
+                    newest = values
+            except BlockingIOError:
+                break  # 缓冲区已空
 
-    sock.setblocking(True)   # 恢复阻塞
-    return newest
+        sock.setblocking(True)   # 恢复阻塞
+        return newest
 
 
 if USING_ROS2_PHASESPACE:
@@ -197,242 +194,246 @@ def setup_compute_device():
     
     return device_type
 
+# DEVICE_TYPE = setup_compute_device()
+DEVICE_TYPE = 'cpu'
 
-class RealRobotController:
-    def __init__(self, device_name="/dev/ttyUSB0", baudrate=1000000, dxl_ids=[1, 2]):
-        self.DEVICENAME = device_name
-        self.BAUDRATE = baudrate
-        self.DXL_IDS = dxl_ids
+U2D2_servo_controller = None
+if USING_USB_SERIAL_SERVO:
 
-        self.PROTOCOL_VERSION = 2.0
-        self.ADDR_TORQUE_ENABLE = 64
-        self.ADDR_GOAL_POSITION = 116  # 4 bytes
-        self.LEN_GOAL_POSITION = 4
-        self.ADDR_PRESENT_POSITION = 132  # X 系列 Present Position
-        self.ADDR_PRESENT_VELOCITY = 128  # X 系列 Present Velocity
-        self.LEN_4 = 4
-        # self.TORQUE_ENABLE = 1
+    class RealRobotController:
+        def __init__(self, device_name="/dev/ttyUSB0", baudrate=1000000, dxl_ids=[1, 2]):
+            self.DEVICENAME = device_name
+            self.BAUDRATE = baudrate
+            self.DXL_IDS = dxl_ids
 
-        self.angle_offset = [-115,-180]
-        self.max_torque_per_joint = [4.5, 1]
-        self.max_pwm_val = 855
+            self.PROTOCOL_VERSION = 2.0
+            self.ADDR_TORQUE_ENABLE = 64
+            self.ADDR_GOAL_POSITION = 116  # 4 bytes
+            self.LEN_GOAL_POSITION = 4
+            self.ADDR_PRESENT_POSITION = 132  # X 系列 Present Position
+            self.ADDR_PRESENT_VELOCITY = 128  # X 系列 Present Velocity
+            self.LEN_4 = 4
+            # self.TORQUE_ENABLE = 1
 
-        self.e_break = [0.235, 0.372]  # 电子制动系数
-        self.stall_torque = [3.0, 1.5]  # 每个关节的额定力矩（Nm）
-        self.torque_limit = [0.5, 0.2]  # 每个关节的力矩限制（Nm）
-        self.full_speed = [77 * 2 * np.pi / 60 , 57 * 2 * np.pi / 60]  # 每个关节的最大速度（弧度/秒）
+            self.angle_offset = [-115,-180]
+            self.max_torque_per_joint = [4.5, 1]
+            self.max_pwm_val = 855
 
-
-        # 初始化串口和协议处理器
-        self.portHandler = PortHandler(self.DEVICENAME)
-        self.packetHandler = PacketHandler(self.PROTOCOL_VERSION)
-
-        # 打开串口
-        if not self.portHandler.openPort():
-            raise RuntimeError("❌ 串口打开失败")
-        if not self.portHandler.setBaudRate(self.BAUDRATE):
-            raise RuntimeError("❌ 设置波特率失败")
-
-        # 初始化同步写对象
-        self.groupSyncWrite = GroupSyncWrite(
-            self.portHandler, self.packetHandler, self.ADDR_GOAL_POSITION, self.LEN_GOAL_POSITION
-        )
-
-        # 初始化 GroupSyncRead
-        self.groupSyncRead = GroupSyncRead(
-            self.portHandler, self.packetHandler,
-            self.ADDR_PRESENT_VELOCITY, 8
-        )
-        for dxl_id in self.DXL_IDS:
-            if not self.groupSyncRead.addParam(dxl_id):
-                raise RuntimeError(f"GroupSyncRead addParam failed: ID={dxl_id}")
-
-        # 当前模式缓存（ID → mode），mode：0=PWM, 1=Current, 3=Position 等
-        self.current_mode_map = {dxl_id: None for dxl_id in self.DXL_IDS}
-        self.pwmgroupWrite = GroupSyncWrite(self.portHandler, self.packetHandler, 100, 2)
+            self.e_break = [0.235, 0.372]  # 电子制动系数
+            self.stall_torque = [3.0, 1.5]  # 每个关节的额定力矩（Nm）
+            self.torque_limit = [0.5, 0.2]  # 每个关节的力矩限制（Nm）
+            self.full_speed = [77 * 2 * np.pi / 60 , 57 * 2 * np.pi / 60]  # 每个关节的最大速度（弧度/秒）
 
 
-    def _set_control_mode_if_needed(self, dxl_id, target_mode):
-        """
-        如果当前模式不是目标模式，则切换舵机控制模式
-        target_mode: int，0=PWM, 3=Position 等
-        """
-        MODE_ADDR = 11  # Control Mode
-        if self.current_mode_map[dxl_id] != target_mode:
-            # 切换模式流程：关闭力矩 → 修改模式 → 启用力矩
-            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 0)
-            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, MODE_ADDR, target_mode)
-            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 1)
-            self.current_mode_map[dxl_id] = target_mode
+            # 初始化串口和协议处理器
+            self.portHandler = PortHandler(self.DEVICENAME)
+            self.packetHandler = PacketHandler(self.PROTOCOL_VERSION)
 
-    def get_joint_positions(self):
-        """
-        返回当前舵机位置（单位：弧度），长度与 self.DXL_IDS 一致
-        """
-        current_positions = []
-        for dxl_id in self.DXL_IDS:
-            pos_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
-                self.portHandler, dxl_id, self.ADDR_PRESENT_POSITION)
+            # 打开串口
+            if not self.portHandler.openPort():
+                raise RuntimeError("❌ 串口打开失败")
+            if not self.portHandler.setBaudRate(self.BAUDRATE):
+                raise RuntimeError("❌ 设置波特率失败")
+
+            # 初始化同步写对象
+            self.groupSyncWrite = GroupSyncWrite(
+                self.portHandler, self.packetHandler, self.ADDR_GOAL_POSITION, self.LEN_GOAL_POSITION
+            )
+
+            # 初始化 GroupSyncRead
+            self.groupSyncRead = GroupSyncRead(
+                self.portHandler, self.packetHandler,
+                self.ADDR_PRESENT_VELOCITY, 8
+            )
+            for dxl_id in self.DXL_IDS:
+                if not self.groupSyncRead.addParam(dxl_id):
+                    raise RuntimeError(f"GroupSyncRead addParam failed: ID={dxl_id}")
+
+            # 当前模式缓存（ID → mode），mode：0=PWM, 1=Current, 3=Position 等
+            self.current_mode_map = {dxl_id: None for dxl_id in self.DXL_IDS}
+            self.pwmgroupWrite = GroupSyncWrite(self.portHandler, self.packetHandler, 100, 2)
+
+
+        def _set_control_mode_if_needed(self, dxl_id, target_mode):
+            """
+            如果当前模式不是目标模式，则切换舵机控制模式
+            target_mode: int，0=PWM, 3=Position 等
+            """
+            MODE_ADDR = 11  # Control Mode
+            if self.current_mode_map[dxl_id] != target_mode:
+                # 切换模式流程：关闭力矩 → 修改模式 → 启用力矩
+                self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 0)
+                self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, MODE_ADDR, target_mode)
+                self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_TORQUE_ENABLE, 1)
+                self.current_mode_map[dxl_id] = target_mode
+
+        def get_joint_positions(self):
+            """
+            返回当前舵机位置（单位：弧度），长度与 self.DXL_IDS 一致
+            """
+            current_positions = []
+            for dxl_id in self.DXL_IDS:
+                pos_result, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(
+                    self.portHandler, dxl_id, self.ADDR_PRESENT_POSITION)
+                if dxl_comm_result != COMM_SUCCESS:
+                    print(f"[ID {dxl_id}] 读取失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
+                    continue
+                elif dxl_error != 0:
+                    print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
+                    continue
+
+                # Dynamixel 位置值是 0~4095，映射到 0~360°
+                degree = (pos_result / 4095.0) * 360.0
+                rad = np.radians(degree)  # 转换为弧度
+                current_positions.append(rad)
+
+            return current_positions
+
+        def degree_to_position(self, degree):
+            degree = degree % 360
+            return int((degree / 360.0) * 4095)
+        
+        def send_joint_positions(self, degrees, check_response=False):
+            """
+            发送目标角度（单位：度）给舵机，自动切换至 Position 控制模式
+            degrees: List[float]，每个关节的目标角度（0~360 度）
+            """
+            assert hasattr(self, "DXL_IDS"), "DXL_IDS 尚未初始化"
+            assert len(degrees) == len(self.DXL_IDS), "角度与舵机ID数量不一致"
+
+            ADDR_GOAL_POSITION = self.ADDR_GOAL_POSITION
+            LEN_GOAL_POSITION = self.LEN_GOAL_POSITION
+            POSITION_MODE = 3
+
+            groupSyncWrite = GroupSyncWrite(self.portHandler, self.packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION)
+            groupSyncWrite.clearParam()
+
+            for dxl_id, degree in zip(self.DXL_IDS, degrees):
+                # 设置模式（如果需要）
+                self._set_control_mode_if_needed(dxl_id, POSITION_MODE)
+
+                pos_val = self.degree_to_position(degree)
+                param_goal_pos = [
+                    pos_val & 0xFF,
+                    (pos_val >> 8) & 0xFF,
+                    (pos_val >> 16) & 0xFF,
+                    (pos_val >> 24) & 0xFF
+                ]
+                success = groupSyncWrite.addParam(dxl_id, param_goal_pos)
+                if not success and check_response:
+                    print(f"[ID {dxl_id}] ❌ 添加同步参数失败")
+
+            result = groupSyncWrite.txPacket()
+
+            if check_response:
+                if result != COMM_SUCCESS:
+                    print("❌ 同步写入失败:", self.packetHandler.getTxRxResult(result))
+                else:
+                    print("✅ 同步写入成功")
+
+        def send_pwm(self, pwm_vals, check_response=False):
+            """
+            发送 PWM 控制信号到多个舵机
+            pwm_vals: List[int]，单位为 [-885, 885]，与 self.DXL_IDS 一一对应
+            自动切换至 PWM 控制模式
+            """
+            assert len(pwm_vals) == len(self.DXL_IDS), "PWM 数量必须与舵机 ID 数量一致"
+
+            ADDR_GOAL_PWM = 100
+            LEN_PWM = 2
+            PWM_MODE = 16  # 0 = PWM 控制模式
+
+            groupSyncWrite = self.pwmgroupWrite
+            groupSyncWrite.clearParam()
+
+            for dxl_id, pwm in zip(self.DXL_IDS, pwm_vals):
+                # 自动检查并设置控制模式为 PWM
+                self._set_control_mode_if_needed(dxl_id, PWM_MODE)
+
+                pwm = int(np.clip(pwm, -885, 885))
+                param_goal_pwm = [pwm & 0xFF, (pwm >> 8) & 0xFF]
+                success = groupSyncWrite.addParam(dxl_id, param_goal_pwm)
+                if not success and check_response:
+                    print(f"[ID {dxl_id}] ❌ 添加 PWM 参数失败")
+
+            result = groupSyncWrite.txPacket()
+
+            if check_response:
+                if result != COMM_SUCCESS:
+                    print("❌ PWM 同步写入失败:", self.packetHandler.getTxRxResult(result))
+                else:
+                    print("✅ PWM 同步写入成功")
+
+        def send_torque(self, torque_vals, check_response=False):
+            """
+            输入力矩（单位 Nm），自动转换为 PWM 并发送给舵机
+            torque_vals: List[float]，与 dxl_ids 一一对应
+            """
+            assert len(torque_vals) == len(self.DXL_IDS), "力矩数量与舵机 ID 不一致"
+
+            #apply torque limits
+            for i in range(len(torque_vals)):
+                torque_vals[i] = np.clip(torque_vals[i], -self.torque_limit[i], self.torque_limit[i])
+
+            pwm_vals = []
+            for idx, tau in enumerate(torque_vals):
+                max_tau = self.max_torque_per_joint[idx]
+                pwm = (tau / max_tau) * self.max_pwm_val
+                pwm_vals.append(int(np.clip(pwm, -self.max_pwm_val, self.max_pwm_val)))
+
+            self.send_pwm(pwm_vals, check_response=check_response)
+
+        def close(self):
+            self.portHandler.closePort()
+
+        def get_joint_state(self):
+            # 一次性请求
+            dxl_comm_result = self.groupSyncRead.txRxPacket()
             if dxl_comm_result != COMM_SUCCESS:
-                print(f"[ID {dxl_id}] 读取失败: {self.packetHandler.getTxRxResult(dxl_comm_result)}")
-                continue
-            elif dxl_error != 0:
-                print(f"[ID {dxl_id}] 错误: {self.packetHandler.getRxPacketError(dxl_error)}")
-                continue
+                print("SyncRead failed:", self.packetHandler.getTxRxResult(dxl_comm_result))
+                return [0.0]*len(self.DXL_IDS), [0.0]*len(self.DXL_IDS)
 
-            # Dynamixel 位置值是 0~4095，映射到 0~360°
-            degree = (pos_result / 4095.0) * 360.0
-            rad = np.radians(degree)  # 转换为弧度
-            current_positions.append(rad)
+            qpos, qvel = [], []
 
-        return current_positions
+            for i, dxl_id in enumerate(self.DXL_IDS):
+                if not self.groupSyncRead.isAvailable(dxl_id, self.ADDR_PRESENT_VELOCITY, 8):
+                    qpos.append(0.0)
+                    qvel.append(0.0)
+                    continue
 
-    def degree_to_position(self, degree):
-        degree = degree % 360
-        return int((degree / 360.0) * 4095)
-    
-    def send_joint_positions(self, degrees, check_response=False):
-        """
-        发送目标角度（单位：度）给舵机，自动切换至 Position 控制模式
-        degrees: List[float]，每个关节的目标角度（0~360 度）
-        """
-        assert hasattr(self, "DXL_IDS"), "DXL_IDS 尚未初始化"
-        assert len(degrees) == len(self.DXL_IDS), "角度与舵机ID数量不一致"
-
-        ADDR_GOAL_POSITION = self.ADDR_GOAL_POSITION
-        LEN_GOAL_POSITION = self.LEN_GOAL_POSITION
-        POSITION_MODE = 3
-
-        groupSyncWrite = GroupSyncWrite(self.portHandler, self.packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION)
-        groupSyncWrite.clearParam()
-
-        for dxl_id, degree in zip(self.DXL_IDS, degrees):
-            # 设置模式（如果需要）
-            self._set_control_mode_if_needed(dxl_id, POSITION_MODE)
-
-            pos_val = self.degree_to_position(degree)
-            param_goal_pos = [
-                pos_val & 0xFF,
-                (pos_val >> 8) & 0xFF,
-                (pos_val >> 16) & 0xFF,
-                (pos_val >> 24) & 0xFF
-            ]
-            success = groupSyncWrite.addParam(dxl_id, param_goal_pos)
-            if not success and check_response:
-                print(f"[ID {dxl_id}] ❌ 添加同步参数失败")
-
-        result = groupSyncWrite.txPacket()
-
-        if check_response:
-            if result != COMM_SUCCESS:
-                print("❌ 同步写入失败:", self.packetHandler.getTxRxResult(result))
-            else:
-                print("✅ 同步写入成功")
-
-    def send_pwm(self, pwm_vals, check_response=False):
-        """
-        发送 PWM 控制信号到多个舵机
-        pwm_vals: List[int]，单位为 [-885, 885]，与 self.DXL_IDS 一一对应
-        自动切换至 PWM 控制模式
-        """
-        assert len(pwm_vals) == len(self.DXL_IDS), "PWM 数量必须与舵机 ID 数量一致"
-
-        ADDR_GOAL_PWM = 100
-        LEN_PWM = 2
-        PWM_MODE = 16  # 0 = PWM 控制模式
-
-        groupSyncWrite = self.pwmgroupWrite
-        groupSyncWrite.clearParam()
-
-        for dxl_id, pwm in zip(self.DXL_IDS, pwm_vals):
-            # 自动检查并设置控制模式为 PWM
-            self._set_control_mode_if_needed(dxl_id, PWM_MODE)
-
-            pwm = int(np.clip(pwm, -885, 885))
-            param_goal_pwm = [pwm & 0xFF, (pwm >> 8) & 0xFF]
-            success = groupSyncWrite.addParam(dxl_id, param_goal_pwm)
-            if not success and check_response:
-                print(f"[ID {dxl_id}] ❌ 添加 PWM 参数失败")
-
-        result = groupSyncWrite.txPacket()
-
-        if check_response:
-            if result != COMM_SUCCESS:
-                print("❌ PWM 同步写入失败:", self.packetHandler.getTxRxResult(result))
-            else:
-                print("✅ PWM 同步写入成功")
-
-    def send_torque(self, torque_vals, check_response=False):
-        """
-        输入力矩（单位 Nm），自动转换为 PWM 并发送给舵机
-        torque_vals: List[float]，与 dxl_ids 一一对应
-        """
-        assert len(torque_vals) == len(self.DXL_IDS), "力矩数量与舵机 ID 不一致"
-
-        #apply torque limits
-        for i in range(len(torque_vals)):
-            torque_vals[i] = np.clip(torque_vals[i], -self.torque_limit[i], self.torque_limit[i])
-
-        pwm_vals = []
-        for idx, tau in enumerate(torque_vals):
-            max_tau = self.max_torque_per_joint[idx]
-            pwm = (tau / max_tau) * self.max_pwm_val
-            pwm_vals.append(int(np.clip(pwm, -self.max_pwm_val, self.max_pwm_val)))
-
-        self.send_pwm(pwm_vals, check_response=check_response)
-
-    def close(self):
-        self.portHandler.closePort()
-
-    def get_joint_state(self):
-        # 一次性请求
-        dxl_comm_result = self.groupSyncRead.txRxPacket()
-        if dxl_comm_result != COMM_SUCCESS:
-            print("SyncRead failed:", self.packetHandler.getTxRxResult(dxl_comm_result))
-            return [0.0]*len(self.DXL_IDS), [0.0]*len(self.DXL_IDS)
-
-        qpos, qvel = [], []
-
-        for i, dxl_id in enumerate(self.DXL_IDS):
-            if not self.groupSyncRead.isAvailable(dxl_id, self.ADDR_PRESENT_VELOCITY, 8):
-                qpos.append(0.0)
-                qvel.append(0.0)
-                continue
-
-            vel_bytes = self.groupSyncRead.getData(dxl_id, 128, 4).to_bytes(4,'little',signed=False)
-            pos_bytes = self.groupSyncRead.getData(dxl_id, 132, 4).to_bytes(4,'little',signed=False)
-            vel_val = int.from_bytes(vel_bytes,'little',signed=True)
-            pos_val = int.from_bytes(pos_bytes,'little',signed=False)
+                vel_bytes = self.groupSyncRead.getData(dxl_id, 128, 4).to_bytes(4,'little',signed=False)
+                pos_bytes = self.groupSyncRead.getData(dxl_id, 132, 4).to_bytes(4,'little',signed=False)
+                vel_val = int.from_bytes(vel_bytes,'little',signed=True)
+                pos_val = int.from_bytes(pos_bytes,'little',signed=False)
 
 
-            # 速度：带符号，单位 0.229 rpm/bit
-            rpm = (vel_val / 1023.0) * 117.0
-            rad_per_sec = rpm * 2 * np.pi / 60
-            qvel.append(rad_per_sec)
+                # 速度：带符号，单位 0.229 rpm/bit
+                rpm = (vel_val / 1023.0) * 117.0
+                rad_per_sec = rpm * 2 * np.pi / 60
+                qvel.append(rad_per_sec)
 
-            # 位置：无符号，0~4095 → 0~360deg
-            degree = (pos_val / 4095.0) * 360.0 + self.angle_offset[i]
-            qpos.append(np.radians(degree))
+                # 位置：无符号，0~4095 → 0~360deg
+                degree = (pos_val / 4095.0) * 360.0 + self.angle_offset[i]
+                qpos.append(np.radians(degree))
 
-        return qpos, qvel
+            return qpos, qvel
 
-DEVICE_TYPE = setup_compute_device()
+    if sys.platform.startswith("linux"):
+        device_path = "/dev/ttyUSB0"   # Ubuntu / Linux
+    elif sys.platform == "darwin":
+        device_path = "/dev/tty.usbserial-FT9HDB5F"  # macOS
+    elif sys.platform == "win32":
+        device_path = "COM7"  # Windows
+    else:
+        print(f"❌ 不支持的操作系统: {sys.platform}, 请自行添加串口路径")
 
-if sys.platform.startswith("linux"):
-    device_path = "/dev/ttyUSB0"   # Ubuntu / Linux
-elif sys.platform == "darwin":
-    device_path = "/dev/tty.usbserial-FT9HDB5F"  # macOS
-elif sys.platform == "win32":
-    device_path = "COM7"  # Windows
-else:
-    raise RuntimeError(f"❌ 不支持的操作系统: {sys.platform}")
+    try:
+        U2D2_servo_controller = RealRobotController( device_name=device_path )
 
-try:
-    real_controller = RealRobotController( device_name=device_path )
+    except Exception as e:
+        print(f"❌ 初始化 RealRobotController 失败: {e}")
+        
 
-except Exception as e:
-    print(f"❌ 初始化 RealRobotController 失败: {e}")
-    real_controller = None
 
 # ============================================================================
 # 自适应目标函数
@@ -444,75 +445,8 @@ class AdaptiveObjective(BaseObjective):
         super().__init__()
         self.task_type = task_type
         self.step = step
-        self._setup_weights()
         self.nominal_hover_thrust = MASS_TOTAL * GRAVITY
-        
-    def _setup_weights(self):
-        """根据任务设置权重（纯MPPI优化）"""
-        if self.task_type == TaskType.HOVER:
-            # 悬停任务：平衡且有效的权重
-            self.w_pos = 100.0      # 位置权重
-            self.w_vel = 30.0       # 速度权重
-            self.w_att = 50.0       # 姿态权重
-            self.w_omega = 20.0     # 角速度权重
-            self.w_joint = 0.0 if self.step == 1 else 5.0
-            self.w_joint_vel = 0.0 if self.step == 1 else 2.0
-            # 特殊项权重
-            self.w_pos_integral = 50.0  # 位置积分效应
-            self.w_vel_ref = 40.0       # 速度参考跟踪
-            self.w_prediction = 30.0    # 预测项
-            
-        elif self.task_type == TaskType.REACH_POINT:
-            self.w_pos = 80.0
-            self.w_vel = 25.0
-            self.w_att = 40.0
-            self.w_omega = 15.0
-            self.w_joint = 0.0
-            self.w_joint_vel = 0.0
-            self.w_pos_integral = 30.0
-            self.w_vel_ref = 30.0
-            self.w_prediction = 20.0
-            
-        elif self.task_type == TaskType.ARM_CONTROL:
-            self.w_pos = 100.0
-            self.w_vel = 35.0
-            self.w_att = 50.0
-            self.w_omega = 20.0
-            self.w_joint = 40.0
-            self.w_joint_vel = 15.0
-            self.w_pos_integral = 50.0
-            self.w_vel_ref = 40.0
-            self.w_prediction = 30.0
-
-        elif self.task_type == TaskType.END_EFFECTOR_TRAJECTORY:
-            # 末端执行器轨迹跟踪：借鉴ARM_CONTROL的成功数值
-            self.w_pos = 120.0      # 提高末端位置权重（主要目标）
-            self.w_vel = 40.0       # 借鉴ARM_CONTROL
-            self.w_att = 50.0       # 借鉴ARM_CONTROL
-            self.w_omega = 20.0     # 借鉴ARM_CONTROL
-            self.w_joint = 15.0     # 关节权重降低（因为是间接控制）
-            self.w_joint_vel = 15.0 # 借鉴ARM_CONTROL
-            self.w_pos_integral = 60.0  # 提高积分效应
-            self.w_vel_ref = 45.0       # 提高速度参考跟踪
-            self.w_prediction = 35.0    # 借鉴ARM_CONTROL
-            
-        else:  # TRAJECTORY
-            self.w_pos = 80.0
-            self.w_vel = 30.0
-            self.w_att = 40.0
-            self.w_omega = 15.0
-            self.w_joint = 5.0
-            self.w_joint_vel = 2.0
-            self.w_pos_integral = 30.0
-            self.w_vel_ref = 35.0
-            self.w_prediction = 25.0
-            
-        
-        # 控制权重
-        self.w_thrust = 0.001
-        self.w_torque = 0.01
-        self.w_joint_ctrl = 0.001 if self.step > 1 else 0.0
-        
+         
     def running_cost(self, state, inputs, reference, steps):
         # ── 兼容 reference 既可能是一维 (17,) 也可能是二维 (H,17) ──
         if reference.ndim == 2:        # e.g. (horizon+1, 17)
@@ -542,13 +476,8 @@ class AdaptiveObjective(BaseObjective):
         drone_err_norm = jnp.linalg.norm(drone_error)
 
         if USING_ARM_POSITION:
-            # 1) 末端误差（远处中等，近处加大）——不归一化
-            # ee_weight = jnp.where(ee_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
-            # cost += 300 * jnp.sum(jnp.where(ee_err_norm < 1.0, ee_err_norm**2, ee_err_norm**2))
             cost += 300 * jnp.sum(ee_err_norm**2)
         else:
-            # 1) 末端误差（远处中等，近处加大）——不归一化
-            # ee_weight = jnp.where(drone_err_norm < 0.12, 500.0, 180.0)  # 12cm 内强化
             cost += 300 * jnp.sum(drone_err_norm**2)
 
         # 2) 平动速度（抑制飘）
@@ -575,9 +504,7 @@ class AdaptiveObjective(BaseObjective):
             cost += 150.0 * jnp.abs(q_joints[0] - reference[7])
             cost += 150.0 * jnp.abs(q_joints[1] - reference[8])
 
-        # ========= 公共项（瘦身后版）=========
-        # 对于 END_EFFECTOR_TRAJECTORY，不再额外追 ref_quat、不再加期望角速度/期望推力
-        # 边界约束和关节极限可选：只留“硬碰硬”的一条，避免过多项相互打架
+        # 7) 机械臂关节限制（软约束）
         joint_limit = 1.3
         j0_excess = jnp.maximum(jnp.abs(q_joints[0]) - joint_limit, 0.0)
         j1_excess = jnp.maximum(jnp.abs(q_joints[1]) - joint_limit, 0.0)
@@ -741,7 +668,7 @@ this_task_config = None
 # ============================================================================
 # 主测试函数
 # ============================================================================
-def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
+def run_test(scenario: Dict, dynamics_step: int = 1):
     """
     运行单个测试场景
     
@@ -798,10 +725,6 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
     config.general.visualize = False
     config.general.integrator_type = "rk4"
     
-    # 3. 获取任务特定的MPPI参数
-    task_config = TaskConfig.get_config_for_task(
-        scenario['task_type'].value, dynamics_step
-    )
     task_config = this_task_config
 
     # 根据设备类型调整参数
@@ -922,31 +845,10 @@ def run_test(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
         results = analyze_trajectory_results(sim, scenario, config)
     elif scenario['task_type'] == TaskType.ARM_CONTROL:
         results = analyze_arm_control_results(sim, scenario, config)
-    else:
-        results = analyze_results(sim, scenario, config)
+
     
     return sim, results
 
-def run_test_with_diagnostics(scenario: Dict, dynamics_step: int = 1, visualize: bool = True):
-    """运行测试并提供诊断信息"""
-    
-    # 运行原始的run_test
-    sim, results = run_test(scenario, dynamics_step, visualize)
-    
-    # 添加诊断
-    # gains = diagnose_controller(sim, scenario)
-    
-    # # 如果增益为零，提供修复建议
-    # if gains is not None and np.linalg.norm(gains) < 1e-6:
-    #     print("\n" + "="*70)
-    #     print("SUGGESTED FIXES:")
-    #     print("="*70)
-    #     print("1. Check if sensitivity computation in RolloutGenerator is working")
-    #     print("2. Verify that gains computation in MPPIGain is correct")
-    #     print("3. Try increasing the noise levels to get better gradient estimates")
-    #     print("4. Consider using finite differences for sensitivity if automatic differentiation fails")
-    
-    return sim, results
 
 def quat_mul(a, b):
     w1,x1,y1,z1 = a
@@ -957,11 +859,10 @@ def quat_mul(a, b):
         w1*y2 - x1*z2 + y1*w2 + z1*x2,
         w1*z2 + x1*y2 - y1*x2 + z1*w2])
 
-
 def run_with_visualization(sim, config, scenario):
     """带MuJoCo可视化运行"""
     print("\nRunning with MuJoCo visualization...")
-    use_real = (real_controller is not None) or (USING_WIFI_RASPI is True)
+    use_real = (U2D2_servo_controller is not None) or (USING_WIFI_RASPI is True)
     print(f"Using real robot controller: {use_real}")
     
     mj_model = mujoco.MjModel.from_xml_path("examples/drone_direct_control.xml")
@@ -999,37 +900,29 @@ def run_with_visualization(sim, config, scenario):
                 if newest:
                     [x,z,y]  = np.asarray(newest["pos"], dtype=float) *0.001       # m
                     pos = [x,-y,z]
-                    print(f'{x:.2f} {-y:.2f} {z:.2f}')
-
 
                     [w,x,y,z] = np.asarray(newest["quat"], dtype=float)       # [w,x,y,z]  
                     q_fix = np.array([np.sqrt(2)/2, 0, 0, -np.sqrt(2)/2])
                     quat = quat_mul([w,x,-z,y], q_fix)
-                    print(f'{x:.2f} {y:.2f} {z:.2f}')  
-
 
                     [x,z,y] = np.asarray(newest["lin_vel"], dtype=float) *0.001  # m/s
                     lin_vel = [x,y,z]
-                    print(f'{x:.2f} {y:.2f} {z:.2f}')
-
 
                     [x,z,y] = np.asarray(newest["ang_vel"], dtype=float) # rad/s
                     ang_vel = [x,-y,z]
-                    print(f'{x:.2f} {y:.2f} {z:.2f}')
-
 
 
             # Get real arm state
             if use_real is True:
                 get_state_start = time.time()
                 if USING_WIFI_RASPI:
-                    values = recv_latest(sock, "ffffi")
+                    values = recv_latest_UDP(sock, "ffffi")
                     if values is not None:
                         real_state = [list(values[:2]), list(values[2:4])]
                     else:
                         real_state = [current_state[7:9], current_state[15:17]]
                 else:
-                    real_state = real_controller.get_joint_state()
+                    real_state = U2D2_servo_controller.get_joint_state()
                 get_state_end = time.time()
                 print(f"Get state time: {(get_state_end - get_state_start)*1000:.2f} ms")
                 q_arm  = jnp.asarray(real_state[0], dtype=jnp.float32)  # 形状 (2,)
@@ -1040,7 +933,6 @@ def run_with_visualization(sim, config, scenario):
                 mj_data.qpos[0:3] = pos
                 mj_data.qpos[3:7] = quat
             else:
-                # 更新MuJoCo
                 mj_data.qpos[0:3] = current_state[0:3]
                 mj_data.qpos[3:7] = current_state[3:7]
 
@@ -1095,7 +987,7 @@ def run_with_visualization(sim, config, scenario):
                 if USING_WIFI_RASPI:
                     sock.sendto(struct.pack("ffi", arm_torques[0], arm_torques[1], i), (raspi_ip, raspi_port))
                 else:
-                    real_controller.send_torque(arm_torques) #0.25ms
+                    U2D2_servo_controller.send_torque(arm_torques) #0.25ms
                 send_torque_end = time.time()
                 print(f"Send torque time: {(send_torque_end - send_torque_start)*1000:.2f} ms")
             
@@ -1129,215 +1021,18 @@ def run_with_visualization(sim, config, scenario):
             else:
                 time.sleep(err_time)
 
-            # time.sleep(0.1)
             
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
     finally:
-        # viewer.close()
+        viewer.close()
         if use_real is True and USING_WIFI_RASPI is False:
-            real_controller.send_torque([0.0,0.0])
+            U2D2_servo_controller.send_torque([0.0,0.0])
+        if USING_WIFI_RASPI is True:
+            sock.sendto(struct.pack("ffi", 0.0, 0.0, i), (raspi_ip, raspi_port))
+            sock.close()
 
 
-
-def run_headless(sim, config, scenario):
-    """无可视化运行（更快）"""
-    print("\nRunning headless simulation...")
-    
-    progress_steps = config.sim_iterations // 10
-    
-    for i in range(config.sim_iterations):
-        sim.step()
-        
-        # 进度条
-        if i % progress_steps == 0:
-            progress = (i / config.sim_iterations) * 100
-            print(f"Progress: {progress:.0f}%")
-        
-        # 检查NaN
-        current_state = sim.state_traj[i+1, :]
-        if jnp.any(jnp.isnan(current_state)):
-            print(f"\n⚠️ NaN detected at step {i}!")
-            break
-    
-    print("Simulation complete!")
-
-def diagnose_controller(sim, scenario):
-    """诊断控制器行为"""
-    print("\n" + "="*70)
-    print("CONTROLLER DIAGNOSTICS")
-    print("="*70)
-    
-    # 检查增益矩阵
-    if hasattr(sim.controller, 'gains_obj'):
-        gains = sim.controller.gains_obj.cur_gains
-        print(f"\nFeedback Gains Matrix Shape: {gains.shape}")
-        print(f"Gains Norm: {np.linalg.norm(gains):.6f}")
-        print(f"Max Gain Element: {np.max(np.abs(gains)):.6f}")
-        
-        if np.linalg.norm(gains) < 1e-6:
-            print("⚠️ WARNING: Gains are essentially zero!")
-            print("   This means feedback control is not working.")
-    else:
-        print("⚠️ WARNING: No gains object found!")
-    
-    # 检查控制输入统计
-    if len(sim.input_traj) > 0:
-        thrust = sim.input_traj[:, 0]
-        torques = sim.input_traj[:, 1:4]
-        
-        print(f"\nThrust Statistics:")
-        print(f"  Mean: {np.mean(thrust):.3f} N (Expected: {MASS_TOTAL * GRAVITY:.3f} N)")
-        print(f"  Std:  {np.std(thrust):.3f} N")
-        print(f"  Min:  {np.min(thrust):.3f} N")
-        print(f"  Max:  {np.max(thrust):.3f} N")
-        
-        # 检查推力偏差
-        thrust_bias = np.mean(thrust) - MASS_TOTAL * GRAVITY
-        if abs(thrust_bias) > 0.1:
-            print(f"  ⚠️ Thrust bias detected: {thrust_bias:.3f} N")
-        
-        print(f"\nTorque Statistics:")
-        for i, axis in enumerate(['X', 'Y', 'Z']):
-            print(f"  {axis}-axis: Mean={np.mean(torques[:, i]):.4f}, "
-                  f"Std={np.std(torques[:, i]):.4f}")
-    
-    # 检查状态轨迹
-    if len(sim.state_traj) > 10:
-        # 检查前10步的行为
-        early_states = sim.state_traj[:10]
-        early_pos = early_states[:, 0:3]
-        early_vel = early_states[:, 9:12]
-        
-        print(f"\nEarly Trajectory Analysis (first 10 steps):")
-        print(f"  Initial position error: {np.linalg.norm(early_pos[0] - scenario['target_pos']):.4f} m")
-        print(f"  Position drift: {np.linalg.norm(early_pos[-1] - early_pos[0]):.4f} m")
-        print(f"  Max velocity: {np.max(np.linalg.norm(early_vel, axis=1)):.4f} m/s")
-        
-        # 检测发散点
-        pos_errors = [np.linalg.norm(sim.state_traj[i, 0:3] - scenario['target_pos']) 
-                     for i in range(len(sim.state_traj))]
-        
-        divergence_threshold = 0.2  # 20cm
-        divergence_step = None
-        for i, err in enumerate(pos_errors):
-            if err > divergence_threshold:
-                divergence_step = i
-                break
-        
-        if divergence_step is not None:
-            divergence_time = divergence_step * 0.02  # assuming dt=0.02
-            print(f"\n⚠️ System diverges at step {divergence_step} (t={divergence_time:.2f}s)")
-            print(f"   Position error at divergence: {pos_errors[divergence_step]:.4f} m")
-            
-            # 分析发散时的状态
-            div_state = sim.state_traj[divergence_step]
-            div_vel = div_state[9:12]
-            print(f"   Velocity at divergence: [{div_vel[0]:.3f}, {div_vel[1]:.3f}, {div_vel[2]:.3f}] m/s")
-            
-            if divergence_step > 0:
-                div_input = sim.input_traj[divergence_step-1]
-                print(f"   Control at divergence: Thrust={div_input[0]:.3f} N")
-    
-    return gains if 'gains' in locals() else None
-
-
-def analyze_results(sim, scenario, config):
-    """分析测试结果"""
-    print("\n" + "="*70)
-    print("Results Analysis")
-    print("="*70)
-    
-    results = {}
-    
-    # 最终状态
-    final_state = sim.state_traj[-1, :]
-    final_pos = final_state[0:3]
-    final_vel = final_state[9:12]
-    final_joints = final_state[7:9]
-    
-    target_pos = scenario['target_pos']
-    target_joints = scenario['target_joints']
-    
-    # 计算误差
-    pos_error = np.linalg.norm(final_pos - target_pos)
-    vel_magnitude = np.linalg.norm(final_vel)
-    joint_error = np.linalg.norm(final_joints - target_joints)
-    
-    results['final_pos_error'] = pos_error
-    results['final_vel_magnitude'] = vel_magnitude
-    results['final_joint_error'] = joint_error
-    
-    print(f"\nFinal State:")
-    print(f"  Position: [{final_pos[0]:.3f}, {final_pos[1]:.3f}, {final_pos[2]:.3f}] m")
-    print(f"  Target:   [{target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f}] m")
-    print(f"  Position error: {pos_error:.4f} m")
-    print(f"  Velocity magnitude: {vel_magnitude:.4f} m/s")
-    
-    if scenario['task_type'] == TaskType.ARM_CONTROL:
-        print(f"  Joint angles: [{np.rad2deg(final_joints[0]):.1f}°, "
-              f"{np.rad2deg(final_joints[1]):.1f}°]")
-        print(f"  Target joints: [{np.rad2deg(target_joints[0]):.1f}°, "
-              f"{np.rad2deg(target_joints[1]):.1f}°]")
-        print(f"  Joint error: {np.rad2deg(joint_error):.2f}°")
-    
-    # 稳态性能（最后20%的数据）
-    steady_start = int(0.8 * len(sim.state_traj))
-    steady_states = sim.state_traj[steady_start:, :]
-    
-    steady_pos_errors = [
-        np.linalg.norm(steady_states[i, 0:3] - target_pos) 
-        for i in range(len(steady_states))
-    ]
-    
-    results['steady_avg_error'] = np.mean(steady_pos_errors)
-    results['steady_max_error'] = np.max(steady_pos_errors)
-    results['steady_std_error'] = np.std(steady_pos_errors)
-    
-    print(f"\nSteady-State Performance (last 20%):")
-    print(f"  Average error: {results['steady_avg_error']:.4f} m")
-    print(f"  Maximum error: {results['steady_max_error']:.4f} m")
-    print(f"  Error std dev: {results['steady_std_error']:.4f} m")
-    
-    # 性能评估
-    print("\n" + "-"*70)
-    if scenario['task_type'] == TaskType.HOVER:
-        if pos_error < 0.05 and vel_magnitude < 0.05:
-            print("✓✓✓ EXCELLENT! Stable hovering achieved!")
-            results['success'] = 'excellent'
-        elif pos_error < 0.1:
-            print("✓✓ GOOD! Nearly stable")
-            results['success'] = 'good'
-        elif pos_error < 0.2:
-            print("✓ OK - Some drift")
-            results['success'] = 'ok'
-        else:
-            print("✗ FAILED - Unstable")
-            results['success'] = 'failed'
-            
-    elif scenario['task_type'] == TaskType.REACH_POINT:
-        if pos_error < 0.1 and vel_magnitude < 0.1:
-            print("✓✓✓ EXCELLENT! Target reached accurately!")
-            results['success'] = 'excellent'
-        elif pos_error < 0.2:
-            print("✓✓ GOOD! Target reached with minor error")
-            results['success'] = 'good'
-        else:
-            print("✗ FAILED - Did not reach target")
-            results['success'] = 'failed'
-            
-    elif scenario['task_type'] == TaskType.ARM_CONTROL:
-        if pos_error < 0.1 and joint_error < 0.1:
-            print("✓✓✓ EXCELLENT! Stable hovering with accurate arm control!")
-            results['success'] = 'excellent'
-        elif pos_error < 0.2 and joint_error < 0.2:
-            print("✓✓ GOOD! Minor deviations")
-            results['success'] = 'good'
-        else:
-            print("✗ FAILED - Lost stability during arm movement")
-            results['success'] = 'failed'
-    
-    return results
 
 def analyze_end_effector_results(sim, scenario, config):
     """分析末端执行器轨迹跟踪结果"""
@@ -1461,10 +1156,6 @@ def analyze_end_effector_results(sim, scenario, config):
     plt.show()
     
     return results
-
-import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D   # noqa: F401  # 激活 3-D 支持
 
 def analyze_trajectory_results(sim, scenario, config):
     """
@@ -1723,89 +1414,6 @@ def analyze_arm_control_results(sim, scenario, config):
     }
 
 
-def plot_results(sim, scenario, config):
-    """绘制结果图表"""
-    # 如果没有传入config，使用sim中的信息
-    if config is None:
-        dt = 0.02  # 默认值
-        time_vec = dt * np.arange(len(sim.state_traj))
-    else:
-        time_vec = config.MPC.dt * np.arange(len(sim.state_traj))
-    
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
-    
-    # 位置轨迹
-    axes[0, 0].plot(time_vec, sim.state_traj[:, 0:3])
-    axes[0, 0].axhline(y=scenario['target_pos'][0], color='r', linestyle='--', alpha=0.3)
-    axes[0, 0].axhline(y=scenario['target_pos'][1], color='g', linestyle='--', alpha=0.3)
-    axes[0, 0].axhline(y=scenario['target_pos'][2], color='b', linestyle='--', alpha=0.3)
-    axes[0, 0].set_ylabel('Position [m]')
-    axes[0, 0].set_xlabel('Time [s]')
-    axes[0, 0].legend(['x', 'y', 'z'])
-    axes[0, 0].grid(True)
-    axes[0, 0].set_title('Position')
-    
-    # 位置误差
-    errors = [
-        np.linalg.norm(sim.state_traj[i, 0:3] - scenario['target_pos']) 
-        for i in range(len(sim.state_traj))
-    ]
-    axes[0, 1].plot(time_vec, errors)
-    axes[0, 1].axhline(y=0.05, color='g', linestyle='--', alpha=0.5, label='5cm')
-    axes[0, 1].axhline(y=0.1, color='r', linestyle='--', alpha=0.5, label='10cm')
-    axes[0, 1].set_ylabel('Position Error [m]')
-    axes[0, 1].set_xlabel('Time [s]')
-    axes[0, 1].legend()
-    axes[0, 1].grid(True)
-    axes[0, 1].set_title('Position Error')
-    
-    # 速度
-    velocities = sim.state_traj[:, 9:12]
-    vel_mags = np.linalg.norm(velocities, axis=1)
-    axes[0, 2].plot(time_vec, vel_mags)
-    axes[0, 2].set_ylabel('Velocity [m/s]')
-    axes[0, 2].set_xlabel('Time [s]')
-    axes[0, 2].grid(True)
-    axes[0, 2].set_title('Velocity Magnitude')
-    
-    # 关节角度
-    axes[1, 0].plot(time_vec, np.rad2deg(sim.state_traj[:, 7:9]))
-    if scenario['task_type'] == TaskType.ARM_CONTROL:
-        axes[1, 0].axhline(y=np.rad2deg(scenario['target_joints'][0]), 
-                          color='r', linestyle='--', alpha=0.5)
-        axes[1, 0].axhline(y=np.rad2deg(scenario['target_joints'][1]), 
-                          color='g', linestyle='--', alpha=0.5)
-    axes[1, 0].set_ylabel('Joint Angles [deg]')
-    axes[1, 0].set_xlabel('Time [s]')
-    axes[1, 0].legend(['Joint 1', 'Joint 2'])
-    axes[1, 0].grid(True)
-    axes[1, 0].set_title('Joint Angles')
-    
-    # 控制输入
-    if len(sim.input_traj) > 0:
-        time_vec_ctrl = time_vec[:-1]
-        
-        # 推力
-        axes[1, 1].plot(time_vec_ctrl, sim.input_traj[:, 0])
-        axes[1, 1].axhline(y=MASS_TOTAL*GRAVITY, color='r', linestyle='--', 
-                          label=f'Hover: {MASS_TOTAL*GRAVITY:.1f}N')
-        axes[1, 1].set_ylabel('Thrust [N]')
-        axes[1, 1].set_xlabel('Time [s]')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True)
-        axes[1, 1].set_title('Thrust')
-        
-        # 扭矩
-        axes[1, 2].plot(time_vec_ctrl, sim.input_traj[:, 1:4])
-        axes[1, 2].set_ylabel('Torque [Nm]')
-        axes[1, 2].set_xlabel('Time [s]')
-        axes[1, 2].legend(['τx', 'τy', 'τz'])
-        axes[1, 2].grid(True)
-        axes[1, 2].set_title('Torques')
-    
-    # plt.suptitle(f'{scenario["name"]} - Step {dynamics_step}')
-    plt.tight_layout()
-    plt.show()
 
 def generate_trajectory_reference(
     waypoints,       # list/ndarray, shape (N,3)
@@ -1871,8 +1479,6 @@ def generate_end_effector_trajectory_reference(ee_waypoints, num_iters, horizon,
     
     return reference
 
-
-
 # ------------------------------------------------------------------
 # 机械臂周期摆动参考：飞机坐标系不动，关节 q1,q2 = A·sin(ωt+φ)
 # ------------------------------------------------------------------
@@ -1910,72 +1516,19 @@ def generate_arm_swing_reference(
     ref_state = ref_state.at[:, :, 7:9].set(ref_q)                              # 摆臂
     return ref_state
 
-# ============================================================================
-# 批量测试运行器
-# ============================================================================
-def run_progressive_tests():
-    """运行完整的渐进式测试序列"""
-    
-    print("\n" + "="*70)
-    print("PROGRESSIVE TESTING SEQUENCE")
-    print("="*70)
-    
-    all_results = {}
-    
-    # 测试序列
-    test_sequence = [
-        # 步骤1：基础测试
-        (TestScenario.hover_test(height=1.5), 1),
-        (TestScenario.reach_point_test([1.0, 0.0, 1.5]), 1),
-        (TestScenario.reach_point_test([0.0, 1.0, 2.0]), 1),
-        
-        # 步骤2：添加重心补偿
-        (TestScenario.hover_test(height=1.5), 2),
-        (TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.2, -0.2]), 2),
-        
-        # 步骤3：完整动力学（如果稳定）
-        # (TestScenario.hover_test(height=1.5), 3),
-        # (TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.3, -0.3]), 3),
-    ]
-    
-    for i, (scenario, step) in enumerate(test_sequence):
-        print(f"\n\nTest {i+1}/{len(test_sequence)}")
-        print("-"*70)
-        
+def select_option(prompt, options):
+    print(f"\n{prompt}")
+    for i, opt in enumerate(options, 1):
+        print(f"{i}. {opt}")
+    while True:
         try:
-            sim, results = run_test_with_diagnostics(scenario, step, visualize=False)
-            all_results[f"test_{i+1}"] = {
-                'scenario': scenario['name'],
-                'step': step,
-                'results': results
-            }
-            
-            # 如果测试失败，询问是否继续
-            if results['success'] == 'failed':
-                response = input("\nTest failed. Continue? (y/n): ")
-                if response.lower() != 'y':
-                    break
-                    
-        except Exception as e:
-            print(f"\n⚠️ Test failed with error: {e}")
-            response = input("Continue? (y/n): ")
-            if response.lower() != 'y':
-                break
-    
-    # 总结
-    print("\n" + "="*70)
-    print("TEST SUMMARY")
-    print("="*70)
-    
-    for test_name, test_data in all_results.items():
-        print(f"\n{test_name}:")
-        print(f"  Scenario: {test_data['scenario']}")
-        print(f"  Step: {test_data['step']}")
-        print(f"  Result: {test_data['results']['success']}")
-        print(f"  Final error: {test_data['results']['final_pos_error']:.4f}m")
-    
-    return all_results
-
+            idx = int(input("请输入对应的序号："))
+            if 1 <= idx <= len(options):
+                return options[idx - 1]
+            else:
+                print("输入的数字不在选项范围内，请重新输入。")
+        except ValueError:
+            print("请输入有效数字。")
 
 # ============================================================================
 # 主入口
@@ -1983,77 +1536,60 @@ def run_progressive_tests():
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Quadrotor-Arm Progressive Testing')
-    parser.add_argument('--test', type=str, default='hover',
-                       choices=['hover', 'reach', 'arm', 'trajectory', 
-                               'ee_trajectory', 'all', 'hover_n_arm'],
-                       help='Test type to run')
-    parser.add_argument('--step', type=int, default=1, choices=[1, 2, 3],
-                       help='Dynamics complexity step')
-    parser.add_argument('--visualize', action='store_true',
-                       help='Enable MuJoCo visualization')
-    parser.add_argument('--plot', action='store_true',
-                       help='Plot results after simulation')
+    test_options = ['hover', 'reach', 'arm', 'trajectory', 'ee_trajectory', 'all', 'hover_n_arm']
+    step_options = [1, 2, 3]
+
+    test = select_option("请选择测试类型：", test_options)
+    step = select_option("请选择动力学复杂度（step）：", step_options)
     
-    args = parser.parse_args()
-    
-    if args.test == 'all':
-        # 运行完整测试序列
-        run_progressive_tests()
-    else:
-        # 运行单个测试
-        if args.test == 'hover':
-            scenario = TestScenario.hover_test()
-        elif args.test == 'reach':
-            scenario = TestScenario.reach_point_test([1.0, 0.0, 2.0])
-        elif args.test == 'arm':
-            scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.5, 0.7])
-        elif args.test == 'ee_trajectory':
-            # 定义末端执行器目标轨迹
-            ee_target = [1, 1, 1]  # 单个目标点
-            scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=800.0)
-        elif args.test == 'trajectory':
-            waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
-            scenario = TestScenario.trajectory_test(waypoints, duration=20.0)
-        elif args.test == 'hover_n_arm':
-            scenario = TestScenario.arm_swing_test(duration=10.0,
-                                           amp_deg=(30,30),
-                                           freq_hz=(0.3,0.3))
+    # 运行单个测试
+    if test == 'hover':
+        scenario = TestScenario.hover_test()
+    elif test == 'reach':
+        scenario = TestScenario.reach_point_test([1.0, 0.0, 2.0])
+    elif test == 'arm':
+        scenario = TestScenario.arm_control_test([0.0, 0.0, 1.5], [0.5, 0.7])
+    elif test == 'ee_trajectory':
+        # 定义末端执行器目标轨迹
+        ee_target = [1, 1, 1]  # 单个目标点
+        scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=800.0)
+    elif test == 'trajectory':
+        waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
+        scenario = TestScenario.trajectory_test(waypoints, duration=20.0)
+    elif test == 'hover_n_arm':
+        scenario = TestScenario.arm_swing_test(duration=10.0,
+                                        amp_deg=(30,30),
+                                        freq_hz=(0.3,0.3))
         
         # Horizon = [80,60,40,30]
         # samples = [8,32,128,512,2048,5000]
 
-        Horizon = [80]
-        samples = [5000]
+    Horizon = [80]
+    samples = [5000]
 
-        for h in Horizon:
-            for s in samples:
-                this_task_config = {
-                                        'dt': 0.018,
-                                        'horizon':h,
-                                        'samples': s,    
-                                        'lambda': 0.7,      
-                                        'noise': jnp.array([
-                                            1.6,    # 减少推力噪声
-                                            0.6,    # 减少X扭矩（避免过冲）
-                                            0.7,    # 保持Y150ms
-                                            0.3,    # Z很好
-                                            0.6,    # 平衡的关节噪声
-                                            0.2   
-                                        ])
-                                    }
-                
-
-                sim, results = run_test_with_diagnostics(scenario, args.step, args.visualize)
-        
-        # if args.plot:
-        #     plot_results(sim, scenario, None)
+    for h in Horizon:
+        for s in samples:
+            this_task_config = {
+                                    'dt': 0.018,
+                                    'horizon':h,
+                                    'samples': s,    
+                                    'lambda': 0.7,      
+                                    'noise': jnp.array([
+                                        1.6,    # 减少推力噪声
+                                        0.6,    # 减少X扭矩（避免过冲）
+                                        0.7,    # 保持Y150ms
+                                        0.3,    # Z很好
+                                        0.6,    # 平衡的关节噪声
+                                        0.2   
+                                    ])
+                                }
+            
+            sim, results = run_test(scenario, step)
         
 
-
-        # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
+        # python .\examples\quadrotor_arm_test.py --test ee_trajectory --step 3
         #192.168.0.172 Iot 5605
         #192.168.0.235 Hm-PC 5605
         #raspi_ip =  '192.168.0.206' 5606
-        #env -u LD_LIBRARY_PATH python examples/quadrotor_arm_test.py --test ee_trajectory --step 3 --visualize
+        #env -u LD_LIBRARY_PATH python examples/quadrotor_arm_test.py --test ee_trajectory --step 3
         # ros2 run phasespace_client psnode
