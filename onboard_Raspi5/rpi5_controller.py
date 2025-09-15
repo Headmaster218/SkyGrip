@@ -2,13 +2,65 @@ from dynamixel_sdk import *  # Dynamixel SDK
 import socket
 import numpy as np
 import struct
+import serial
+import struct
+import time
+import numpy as np
+
+# === 串口配置 ===
+SERIAL_PORT = '/dev/ttyACM0'     # 根据你的系统改成对应串口，比如 '/dev/ttyACM0' 或 'COM3'
+BAUDRATE = 115200
+
+
+# === 串口通信函数 ===
+def send_pwm(ser, t, r, p, y):
+    # 注意：STM32 是大端还是小端？默认我们用大端（如果你用的是 `>HHHH`）
+    packet = struct.pack('>HHHH', t, r, p, y)
+    ser.write(packet)
+
+
+# === 常量 ===
+K_F = 0.1667        # N / PWM  ← 16.96 g × 9.81e-3
+K_M = 6.80e-4       # N·m / PWM
+
+# 机架坐标 (m)
+a, b = 0.1116, 0.0856
+x_pos  = np.array([ +a,  +a, -a, -a ])   # RF, LF, RB, LB
+y_pos  = np.array([ +b,  -b, +b, -b ])
+spin   = np.array([ -1,  +1, +1, -1 ])   # CW, CCW, CCW, CW
+
+def pwm_from_wrench_N_fullmodel(total_thrust_N,
+                                 tau_roll, tau_pitch, tau_yaw,
+                                 k_f_slope=0.1667,
+                                 thrust_bias=-23.29,  # N
+                                 k_m=6.80e-4,
+                                 x=x_pos, y=y_pos, s=spin):
+    """
+    输出更贴近实际拟合模型的 PWM。
+    """
+    M = np.vstack((
+        k_f_slope * np.ones(4),
+        k_f_slope * y,
+        k_f_slope * x,
+        k_m * s
+    ))
+
+    # 修正总推力：减去偏置项再均分
+    T_corrected = total_thrust_N - 4 * thrust_bias
+    wrench = np.array([T_corrected, tau_roll, tau_pitch, tau_yaw])
+    pwm = np.linalg.solve(M, wrench)
+    pwm = np.clip(pwm, 110, 200)  # 限制 PWM 在 110 到 200 之间
+    return pwm
+
+
+
 
 host_ip =  '192.168.0.172' #IoT
 # host_ip =  '192.168.0.235' #Hm-PC
 host_port = 5605
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(("0.0.0.0", 5606))   # 监听本机 5005 端口
-def recv_latest(sock, fmt="ffi", bufsize=1024):
+def recv_latest(sock, fmt="ffffffi", bufsize=1024):
     """
     从UDP缓冲区取出所有数据，只返回 i 最大的那条
     :param sock: 已经 bind 的 UDP socket
@@ -297,21 +349,30 @@ i = 0
 miss_count = 0  # 连续未收到消息的次数
 
 while True:
-    i += 1
-    qpos, qvel = real_controller.get_joint_state()
-    sock.sendto(struct.pack("ffffi", qpos[0], qpos[1], qvel[0], qvel[1], i), (host_ip, host_port))
+    with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1) as ser:
+        i += 1
+        qpos, qvel = real_controller.get_joint_state()
+        sock.sendto(struct.pack("ffffi", qpos[0], qpos[1], qvel[0], qvel[1], i), (host_ip, host_port))
 
-    values = recv_latest(sock, "ffi")
-    if values is not None:
-        # 收到消息，正常控制
-        real_controller.send_torque([values[0], values[1]])
-        miss_count = 0  # 重置未收到计数
-        print('success control ' + str(i))
-    else:
-        # 没收到消息
-        miss_count += 1
-        print("No command for {miss_count} cycles, torque set to 0")
-        if miss_count >= 500:
-            real_controller.send_torque([0.0, 0.0])  # 停止两个电机
-            print("No command for 500 cycles, torque set to 0")
+        values = recv_latest(sock, "ffffffi")
+        if values is not None:
+            # 收到消息，正常控制
+            real_controller.send_torque([values[0], values[1]])
+            pwm_cmd = pwm_from_wrench_N_fullmodel(
+                total_thrust_N=values[2],    # ≈ 600 g 悬停
+                tau_roll=values[3],
+                tau_pitch=-values[4],
+                tau_yaw=-values[5]
+            )
+            send_pwm(ser, int(pwm_cmd[0]), int(pwm_cmd[1]), int(pwm_cmd[2]), int(pwm_cmd[3]))
+            miss_count = 0  # 重置未收到计数
+            print('success control ' + str(i))
+        else:
+            # 没收到消息
+            miss_count += 1
+            print("No command for {miss_count} cycles, torque set to 0")
+            if miss_count >= 100:
+                real_controller.send_torque([0.0, 0.0])  # 停止两个电机
+                send_pwm(ser, 0,0,0,0)
+                print("No command for 500 cycles, torque set to 0")
 
