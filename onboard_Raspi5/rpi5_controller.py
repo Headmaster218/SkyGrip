@@ -6,10 +6,12 @@ import serial
 import struct
 import time
 import numpy as np
+import time
+
 
 # === 串口配置 ===
 SERIAL_PORT = '/dev/ttyACM0'     # 根据你的系统改成对应串口，比如 '/dev/ttyACM0' 或 'COM3'
-BAUDRATE = 115200
+BAUDRATE = 1000000
 
 
 # === 串口通信函数 ===
@@ -60,6 +62,8 @@ host_ip =  '192.168.0.172' #IoT
 host_port = 5605
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(("0.0.0.0", 5606))   # 监听本机 5005 端口
+
+
 def recv_latest(sock, fmt="ffffffi", bufsize=1024):
     """
     从UDP缓冲区取出所有数据，只返回 i 最大的那条
@@ -350,29 +354,52 @@ miss_count = 0  # 连续未收到消息的次数
 
 while True:
     with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1) as ser:
+        start_time = time.time()
         i += 1
+        start_time1 = time.time()
         qpos, qvel = real_controller.get_joint_state()
+        # print(f'get_joint_state time:{time.time()-start_time1}') #~10ms
+
+        start_time1 = time.time()
         sock.sendto(struct.pack("ffffi", qpos[0], qpos[1], qvel[0], qvel[1], i), (host_ip, host_port))
 
         values = recv_latest(sock, "ffffffi")
+        # print(f'network time:{time.time()-start_time1}')
         if values is not None:
             # 收到消息，正常控制
+            start_time1 = time.time()
             real_controller.send_torque([values[0], values[1]])
+            print(f'send_torque time:{time.time()-start_time1}')
+
+            start_time1 = time.time()
             pwm_cmd = pwm_from_wrench_N_fullmodel(
                 total_thrust_N=values[2],    # ≈ 600 g 悬停
                 tau_roll=values[3],
                 tau_pitch=-values[4],
                 tau_yaw=-values[5]
             )
+            print(f'compute time:{time.time()-start_time1}')
+
+            start_time1 = time.time()
             send_pwm(ser, int(pwm_cmd[0]), int(pwm_cmd[1]), int(pwm_cmd[2]), int(pwm_cmd[3]))
+            print(f'send_pwm time:{time.time()-start_time1}')
+
             miss_count = 0  # 重置未收到计数
-            print('success control ' + str(i))
+            # print('success control ' + str(i))
+            print(f'One loop time:{time.time()-start_time}')
         else:
             # 没收到消息
             miss_count += 1
-            print("No command for {miss_count} cycles, torque set to 0")
-            if miss_count >= 100:
+            # print("No command for {miss_count} cycles, torque set to 0")
+            if miss_count >= 50:
                 real_controller.send_torque([0.0, 0.0])  # 停止两个电机
-                send_pwm(ser, 0,0,0,0)
-                print("No command for 500 cycles, torque set to 0")
+                send_pwm(ser, 110,110,110,110)
+                if miss_count == 100:
+                    print("No command for 50 cycles, torque set to 0")
+                if miss_count % 5000 == 0:
+                    print(f"Prevent Beep at {miss_count}")
+                    send_pwm(ser, 127,127,127,127)
+                    # time.sleep(0.01)
+                    send_pwm(ser, 110,110,110,110)
+
 
