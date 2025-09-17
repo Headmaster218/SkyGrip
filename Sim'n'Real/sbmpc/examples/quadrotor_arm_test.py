@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 无人机-机械臂系统渐进式测试框架
 支持三个步骤和多种任务的测试
@@ -870,7 +870,7 @@ def run_with_visualization(sim, config, scenario):
     viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
     
     # 设置相机
-    viewer.cam.distance = 8.0
+    viewer.cam.distance = 4.0
     viewer.cam.elevation = -90
     viewer.cam.azimuth = 0
 
@@ -890,9 +890,7 @@ def run_with_visualization(sim, config, scenario):
             if i == 1:
                 start_time = time.time()
 
-            ctrl = sim.input_traj[i, :]
             current_state = sim.state_traj[i, :]
-            arm_torques = ctrl[4:6]
 
             if USING_ROS2_PHASESPACE:
                 newest = recv_latest_json(sock2)
@@ -902,7 +900,8 @@ def run_with_visualization(sim, config, scenario):
                     pos = [x,-y,z]
 
                     [w,x,y,z] = np.asarray(newest["quat"], dtype=float)       # [w,x,y,z]  
-                    q_fix = np.array([np.sqrt(2)/2, 0, 0, -np.sqrt(2)/2])
+                    # q_fix = np.array([np.sqrt(2)/2, 0, 0, -np.sqrt(2)/2])
+                    q_fix = np.array([1, 0, 0, 0])
                     quat = quat_mul([w,x,-z,y], q_fix)
 
                     [x,z,y] = np.asarray(newest["lin_vel"], dtype=float) *0.001  # m/s
@@ -924,14 +923,26 @@ def run_with_visualization(sim, config, scenario):
                 else:
                     real_state = U2D2_servo_controller.get_joint_state()
                 get_state_end = time.time()
-                print(f"Get state time: {(get_state_end - get_state_start)*1000:.2f} ms")
+                # print(f"Get state time: {(get_state_end - get_state_start)*1000:.2f} ms")
                 q_arm  = jnp.asarray(real_state[0], dtype=jnp.float32)  # 形状 (2,)
                 dq_arm = jnp.asarray(real_state[1], dtype=jnp.float32)  # 形状 (2,)
             
+
+
+            # 0:3 位置
+            # 3:7 姿态
+            # 7:9 关节角
+            # 9:15 线/角速度
+            # 15:17 关节角速度
+
             # Get real Phasespace state
             if USING_ROS2_PHASESPACE and quat is not None:
                 mj_data.qpos[0:3] = pos
                 mj_data.qpos[3:7] = quat
+                sim.state_traj[i, :][0:3] = pos
+                sim.current_state = sim.current_state.at[0:3].set(jnp.asarray(pos, dtype=jnp.float32))
+                sim.state_traj[i, :][3:7] = quat
+                sim.current_state = sim.current_state.at[3:7].set(jnp.asarray(quat, dtype=jnp.float32))
             else:
                 mj_data.qpos[0:3] = current_state[0:3]
                 mj_data.qpos[3:7] = current_state[3:7]
@@ -939,7 +950,7 @@ def run_with_visualization(sim, config, scenario):
             if mj_model.nq > 7:
                 if use_real is True:
                     mj_data.qpos[7:9] = real_state[0]
-                    sim.state_traj[i+1, :][7:9] = real_state[0]
+                    sim.state_traj[i, :][7:9] = real_state[0]
                     sim.current_state = sim.current_state.at[7:9].set(q_arm)
                 else:
                     mj_data.qpos[7:9] = current_state[7:9]
@@ -950,15 +961,26 @@ def run_with_visualization(sim, config, scenario):
                 # 1) 修改 MuJoCo 内部速度
                 mj_data.qvel[6:8] = np.array([2.0, 0.0])
 
-                # 2) 修改仿真记录 —— 用 i+1 才会参与下一步积分
-                sim.state_traj[i+1, 15:17] = np.array([2.0, 0.0], dtype=np.float32)
+                # 2) 修改仿真记录 —— 用 i 才会参与下一步积分
+                sim.state_traj[i, 15:17] = np.array([2.0, 0.0], dtype=np.float32)
 
                 # 3) 修改当前 JAX 状态；一定要“重新赋回”
                 sim.current_state = sim.current_state.at[15:17].set(jnp.array([2.0, 0.0], dtype=jnp.float32))
 
+
+            # 0:3 位置
+            # 3:7 姿态
+            # 7:9 关节角
+            # 9:15 线/角速度
+            # 15:17 关节角速度
+
             if USING_ROS2_PHASESPACE  and lin_vel is not None:
                 mj_data.qvel[0:3] = lin_vel
                 mj_data.qvel[3:6] = ang_vel
+                sim.state_traj[i, :][9:12] = lin_vel
+                sim.current_state = sim.current_state.at[9:12].set(jnp.asarray(lin_vel, dtype=jnp.float32))
+                sim.state_traj[i, :][12:15] = ang_vel
+                sim.current_state = sim.current_state.at[12:15].set(jnp.asarray(ang_vel, dtype=jnp.float32))
             else:
                 # 更新MuJoCo
                 mj_data.qvel[0:3] = current_state[9:12]
@@ -966,7 +988,7 @@ def run_with_visualization(sim, config, scenario):
             if mj_model.nv > 6:
                 if use_real is True:
                     mj_data.qvel[6:8] = real_state[1]
-                    sim.state_traj[i+1, :][15:17] = real_state[1]
+                    sim.state_traj[i, :][15:17] = real_state[1]
                     sim.current_state = sim.current_state.at[15:17].set(dq_arm)
                 else:
                     mj_data.qvel[6:8] = current_state[15:17]
@@ -979,17 +1001,21 @@ def run_with_visualization(sim, config, scenario):
             sim_end = time.time()
             # print(f"Sim step time: {(sim_end - sim_start)*1000:.2f} ms")
 
-
+            ctrl = sim.input_traj[i, :]
+            arm_torques = ctrl[4:6]
+            drone_thrust = ctrl[0]
+            drone_torques = ctrl[1:4]
+            print(ctrl[0:4])
 
             # 发送控制到真实机器人
             if use_real is True:
                 send_torque_start = time.time()
                 if USING_WIFI_RASPI:
-                    sock.sendto(struct.pack("ffi", arm_torques[0], arm_torques[1], i), (raspi_ip, raspi_port))
+                    sock.sendto(struct.pack("ffffffi", arm_torques[0], arm_torques[1],drone_thrust,drone_torques[0],drone_torques[1], drone_torques[2], i), (raspi_ip, raspi_port))
                 else:
                     U2D2_servo_controller.send_torque(arm_torques) #0.25ms
                 send_torque_end = time.time()
-                print(f"Send torque time: {(send_torque_end - send_torque_start)*1000:.2f} ms")
+                # print(f"Send torque time: {(send_torque_end - send_torque_start)*1000:.2f} ms")
             
             # # 检查NaN
             # if jnp.any(jnp.isnan(current_state)):
@@ -1021,6 +1047,8 @@ def run_with_visualization(sim, config, scenario):
             else:
                 time.sleep(err_time)
 
+            # input()
+
             
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
@@ -1029,7 +1057,7 @@ def run_with_visualization(sim, config, scenario):
         if use_real is True and USING_WIFI_RASPI is False:
             U2D2_servo_controller.send_torque([0.0,0.0])
         if USING_WIFI_RASPI is True:
-            sock.sendto(struct.pack("ffi", 0.0, 0.0, i), (raspi_ip, raspi_port))
+            sock.sendto(struct.pack("ffffffi", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, i), (raspi_ip, raspi_port))
             sock.close()
 
 
@@ -1552,12 +1580,12 @@ if __name__ == "__main__":
     elif test == 'ee_trajectory':
         # 定义末端执行器目标轨迹
         ee_target = [1, 1, 1]  # 单个目标点
-        scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=800.0)
+        scenario = TestScenario.end_effector_trajectory_test(ee_target, duration=1.0)
     elif test == 'trajectory':
         waypoints = [[0, 0, 1.5], [0, 0, 1.5], [1, 0, 1.5], [1, 1, 2.0], [0, 1, 2.0], [0, 0, 1.5]]
         scenario = TestScenario.trajectory_test(waypoints, duration=20.0)
     elif test == 'hover_n_arm':
-        scenario = TestScenario.arm_swing_test(duration=10.0,
+        scenario = TestScenario.arm_swing_test(duration=4.0,
                                         amp_deg=(30,30),
                                         freq_hz=(0.3,0.3))
         
@@ -1573,17 +1601,17 @@ if __name__ == "__main__":
                                     'dt': 0.018,
                                     'horizon':h,
                                     'samples': s,    
-                                    'lambda': 0.7,      
+                                    'lambda': 0.7, 
                                     'noise': jnp.array([
-                                        1.6,    # 减少推力噪声
-                                        0.6,    # 减少X扭矩（避免过冲）
-                                        0.7,    # 保持Y150ms
-                                        0.3,    # Z很好
+                                        0.2,    # 减少推力噪声
+                                        0.25,    # 减少X扭矩（避免过冲）
+                                        0.15,    # 保持Y150ms
+                                        0.05,    # Z很好
                                         0.6,    # 平衡的关节噪声
                                         0.2   
                                     ])
                                 }
-            
+            time.sleep(5)
             sim, results = run_test(scenario, step)
         
 
