@@ -1,0 +1,132 @@
+<mujocoinclude>
+    <compiler angle="radian" meshdir="./"/>
+    <option timestep="0.001" gravity="0 0 -9.81" integrator="RK4"/>
+        <visual>
+            <map znear="0.001"/>
+        </visual>
+    <asset>
+        <mesh name="base_link" content_type="model/stl" file="base_link.STL"/>
+        <mesh name="Link_1" content_type="model/stl" file="Link_1.STL"/>
+        <mesh name="connectf" content_type="model/stl" file="connectf.stl" scale="0.0001 0.0001 0.0001"/>
+        <mesh name="gripper_base" content_type="model/stl" file="gripper_base.stl" scale="0.001 0.001 0.001"/>
+        <mesh name="right_clamp" content_type="model/stl" file="right_clamp.stl" scale="0.001 0.001 0.001"/>
+        <mesh name="left_clamp" content_type="model/stl" file="left_clamp.stl" scale="0.001 0.001 0.001"/>
+
+        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+        <texture name="grid" type="2d" builtin="checker" rgb1="0.1 0.1 0.1" rgb2="0.15 0.15 0.15" width="512" height="512" mark="cross" markrgb="0.2 0.2 0.2"/>
+        <material name="grid_mat" texture="grid" texrepeat="1 1" texuniform="true"/>
+    </asset>
+
+    <contact>
+        <exclude body1="base_link" body2="Link_1"/>
+        <exclude body1="Link_1" body2="connect"/>
+        <exclude body1="connect" body2="gripper_assembly"/>
+        <exclude body1="gripper_assembly" body2="clamp_1"/>
+        <exclude body1="gripper_assembly" body2="clamp_2"/>
+        <exclude body1="clamp_1" body2="clamp_2"/>
+        <exclude body1="Link_1" body2="clamp_1"/>
+        <exclude body1="Link_1" body2="clamp_2"/>
+        <exclude body1="connect" body2="clamp_1"/>
+        <exclude body1="connect" body2="clamp_2"/>
+        
+        <exclude body1="base_link" body2="connect"/>
+        <exclude body1="base_link" body2="gripper_assembly"/>
+    </contact>
+
+    <equality>
+        <joint joint1="right_clamp" joint2="left_clamp" polycoef="0 -1 0 0 0"
+               solref="0.001 1" solimp="0.999 0.9999 0.0001"/>
+    </equality>
+
+    <actuator>
+        <position name="act_joint1" joint="Joint_1" ctrlrange="-1.6 1.6" forcerange="-0.6 0.6" kp="998.22" kv="2.731"/>
+        <position name="act_joint2" joint="Joint_2" ctrlrange="-1.6 1.6" forcerange="-0.4 0.4" kp="998.22" kv="2.731"/>
+        <position name="act_gripper" joint="right_clamp" ctrlrange="0 0.016" forcerange="-3.5 3.5" kp="998.22" kv="2.731"/>
+        <motor name="thrust" site="thrust_point" gear="0 0 1 0 0 0" ctrlrange="0 30"/>
+        <motor name="roll_torque" site="thrust_point" gear="0 0 0 1 0 0" ctrlrange="-1 1"/>
+        <motor name="pitch_torque" site="thrust_point" gear="0 0 0 0 1 0" ctrlrange="-1 1"/>
+        <motor name="yaw_torque" site="thrust_point" gear="0 0 0 0 0 1" ctrlrange="-1 1"/>
+    </actuator>
+
+    <worldbody>
+        <geom name="ground" type="plane" size="20 20 0.1" material="grid_mat"/>
+
+        <light name="sunlight" directional="true" pos="0 0 4" dir="0 0 -1" castshadow="true" diffuse="0.8 0.8 0.8"/>
+        <light name="ambient_fill" directional="false" pos="0 0 5" castshadow="false" diffuse="0.3 0.3 0.3" ambient="0.2 0.2 0.2"/>
+
+        <body name="base_link" pos="0 0 1.5">
+            <freejoint name="drone_free_joint"/>
+
+            <inertial mass="0.904"
+                      pos="1.928E-06 0.0086666 0.027403"
+                      diaginertia="0.0036974 0.0050446 0.0085863"/>
+
+            <camera name="scene_cam" pos="0 -0.07 0.15" xyaxes="-1.95 0.05 0  0.02 -0.98 1" fovy="100"/>
+
+            <camera name="overview_cam" pos="-0.002 0.4234 0.2879" xyaxes="-1 0 0  0 -0.7679 0.6406" fovy="65"/>
+
+            <geom type="mesh" mesh="base_link" rgba="0.7 0.7 0.9 1"/>
+            <geom name="leg_front_left" type="cylinder" size="0.008 0.085" pos="0.108 0.088 -0.065" rgba="0.2 0.2 0.2 1" density="0" mass="0.00"/>
+            <geom name="leg_front_right" type="cylinder" size="0.008 0.085" pos="0.108 -0.088 -0.065" rgba="0.2 0.2 0.2 1" density="0" mass="0.00"/>
+            <geom name="leg_back_left" type="cylinder" size="0.008 0.085" pos="-0.108 0.088 -0.065" rgba="0.2 0.2 0.2 1" density="0" mass="0.00"/>
+            <geom name="leg_back_right" type="cylinder" size="0.008 0.085" pos="-0.108 -0.088 -0.065" rgba="0.2 0.2 0.2 1" density="0" mass="0.00"/>
+
+            <site name="thrust_point" pos="0 0 0" size="0.02" rgba="0 1 1 0.8" type="sphere"/>
+
+            <body name="Link_1" pos="0.001 -2.5e-05 -0.038" quat="1 -0.000327565 0 0">
+                <inertial pos="-0.0016184 -7.0854E-06 -0.08892"
+                          mass="0.095"
+                          diaginertia="2.0770E-05 2.7200E-05 1.425e-05"/>
+                <joint name="Joint_1" pos="0 0 0" axis="1 0 0" range="-1.6 1.6" armature="1e-4" damping="0.372" frictionloss="0.08"/>
+                <geom contype="0" conaffinity="0" type="mesh" mesh="Link_1" rgba="1 0.95 0.9 1"/>
+
+                <body name="connect" pos="-0.003 0 -0.1308" quat="0.7071068 0.7071068 0 0">
+                    <inertial pos="-0.000538 0.001755 0.023525" mass="0.005"
+                              fullinertia="7.337778e-07 1.619261e-06 1.379228e-06 4.377511e-08 3.228389e-08 -1.072306e-07"/>
+                    <joint name="Joint_2" pos="0 0 0" axis="1 0 0" range="-1.6 1.6" armature="1e-4" damping="0.235" frictionloss="0.203"/>
+                    <geom type="mesh" quat="0 0 0 1" contype="0" conaffinity="0" group="1" density="0" rgba="0.6 0.6 0.6 1" mesh="connectf"/>
+                    <geom type="mesh" quat="0 0 0 1" rgba="0.6 0.6 0.6 1" mesh="connectf"/>
+
+                    <body name="gripper_assembly" pos="-0.0053 0.0066 0.029" quat="-0.7071068 0.7071068 0 0">
+                        <inertial pos="0 -0.01615 0" mass="0.024"
+                                  diaginertia="4.76570e-06 7.34937e-06 6.75683e-06"/>
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="gripper_base" rgba="0.6 0.6 0.6 1"/>
+                        <geom type="mesh" mesh="gripper_base"
+                              contype="0" conaffinity="0" group="1" rgba="0.6 0.6 0.6 0"/>
+
+                        <camera name="wrist_cam" pos="0 -0.025 0.0534" xyaxes="-1 0 0  0 -0.9609 0.2770" fovy="110"/>
+
+                        <site name="grasp_site" pos="0 -0.0423 -0.0066" size="0.006"
+                              rgba="1 0.5 0 0" type="sphere"/>
+
+                        <body name="clamp_1" pos="0 -0.019 -0.0066">
+                            <inertial pos="0.0025 -0.01665 0" mass="0.003"
+                                      diaginertia="4.09472e-07 1.51242e-07 2.96214e-07"/>
+                            <joint name="right_clamp" pos="0 0 0" axis="1 0 0" type="slide"
+                                   range="0 0.016" actuatorfrcrange="-1.9 1.9" damping="0.5" frictionloss="0.1"/>
+                            <geom type="mesh" mesh="right_clamp"
+                                  contype="0" conaffinity="0" group="1" rgba="0.5 0.5 0.5 1"/>
+                            <geom name="pad_1" type="box" pos="0.001 -0.0233 0"
+                                  size="0.001 0.009 0.010"
+                                  rgba="0.25 0.25 0.3 0"
+                                  friction="1.5 0.01 0.001" solref="0.004 1"/>
+                        </body>
+
+                        <body name="clamp_2" pos="0 -0.019 -0.0066">
+                            <inertial pos="-0.0025 -0.01665 0" mass="0.003"
+                                      diaginertia="4.09472e-07 1.51242e-07 2.96214e-07"/>
+                            <joint name="left_clamp" pos="0 0 0" axis="1 0 0" type="slide"
+                                   range="-0.016 0" actuatorfrcrange="-1.9 1.9" damping="0.5" frictionloss="0.1"/>
+                            <geom type="mesh" mesh="left_clamp"
+                                  contype="0" conaffinity="0" group="1" rgba="0.5 0.5 0.5 1"/>
+                            <geom name="pad_2" type="box" pos="-0.001 -0.0233 0"
+                                  size="0.001 0.009 0.010"
+                                  rgba="0.25 0.25 0.3 0"
+                                  friction="1.5 0.01 0.001" solref="0.004 1"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujocoinclude>
